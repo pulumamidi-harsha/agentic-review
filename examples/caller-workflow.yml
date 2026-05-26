@@ -1,8 +1,8 @@
 # ────────────────────────────────────────────────────────────────────────────────
-# Drop this file into ANY repo — it calls the centralized AI review pipeline.
-# No configuration needed. The AI detects your stack automatically.
+# AI PR Review — Drop this file into ANY repo's .github/workflows/
+# That's it. No other configuration needed. AI detects your stack automatically.
 # ────────────────────────────────────────────────────────────────────────────────
-name: PR Check
+name: AI PR Review
 
 on:
   pull_request:
@@ -11,8 +11,6 @@ on:
 jobs:
   ai-review:
     uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@main
-    with:
-      review_type: full
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}

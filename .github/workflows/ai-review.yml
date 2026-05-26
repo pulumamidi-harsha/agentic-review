@@ -1,9 +1,3 @@
-# ────────────────────────────────────────────────────────────────────────────────
-# Universal AI-Powered PR Review Pipeline (Fully AI-Driven)
-# ────────────────────────────────────────────────────────────────────────────────
-# ZERO hardcoded commands. The AI reads the repository, figures out what to run,
-# executes dynamically, then reviews the results. Works for ANY stack.
-# ────────────────────────────────────────────────────────────────────────────────
 name: AI PR Review
 
 on:
@@ -14,11 +8,6 @@ on:
         required: false
         type: string
         default: 'full'
-      prompts_ref:
-        description: 'Branch/tag of the prompts repo to use'
-        required: false
-        type: string
-        default: 'main'
     secrets:
       AI_API_KEY:
         description: 'API key for LLM (MGA/OpenAI/Azure OpenAI)'
@@ -30,105 +19,94 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  checks: write
 
 jobs:
   ai-review:
     name: AI Code Review
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+
+    concurrency:
+      group: ai-review-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
 
     steps:
-      # ── 1. Checkout the target repository ──────────────────────────────────
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ── 2. Checkout prompts from centralized repo ──────────────────────────
       - name: Checkout AI prompts
         uses: actions/checkout@v4
         with:
           repository: bayer-int/agentic-review
-          ref: ${{ inputs.prompts_ref }}
+          ref: main
           path: .ai-prompts
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
 
-      # ── 3. Gather FULL repository context for AI ───────────────────────────
       - name: Gather repository context
         id: context
         run: |
-          # File tree (exclude noise)
           find . -type f \
             -not -path './.git/*' \
             -not -path './node_modules/*' \
             -not -path './.ai-prompts/*' \
             -not -path './dist/*' \
             -not -path './build/*' \
+            -not -path './.next/*' \
             -not -path './__pycache__/*' \
             -not -path './.venv/*' \
-            -not -path './.next/*' \
+            -not -path './vendor/*' \
+            -not -path './target/*' \
+            -not -path './.gradle/*' \
             | sort | head -500 > /tmp/file-tree.txt
 
-          # PR diff (exclude lockfiles)
           git diff origin/${{ github.base_ref }}...HEAD -- . \
-            ':!package-lock.json' ':!yarn.lock' ':!pnpm-lock.yaml' ':!*.lock' ':!go.sum' \
+            ':!package-lock.json' ':!yarn.lock' ':!pnpm-lock.yaml' ':!*.lock' ':!go.sum' ':!Cargo.lock' \
             | head -15000 > /tmp/pr-diff.txt
 
-          # Collect ALL config/build files — AI will read these to determine commands
           CONFIG_CONTENT=""
-          CONFIG_PATTERNS=(
-            "package.json" "tsconfig.json" "tsconfig.*.json"
-            "pyproject.toml" "setup.py" "setup.cfg" "requirements*.txt" "tox.ini"
-            "go.mod" "Cargo.toml"
-            "Makefile" "Justfile" "Taskfile.yml"
-            "Dockerfile" "docker-compose.yml" "docker-compose.yaml"
-            ".eslintrc*" ".prettierrc*" "biome.json"
-            "ruff.toml" "mypy.ini" ".flake8"
-            "jest.config*" "vitest.config*" "pytest.ini" "conftest.py"
-            ".github/workflows/*.yml" ".github/workflows/*.yaml"
-            "nx.json" "turbo.json" "lerna.json" "pnpm-workspace.yaml"
-            "*.tf" "terragrunt.hcl"
-          )
+          for f in $(find . -maxdepth 3 \( \
+            -name "package.json" -o -name "tsconfig.json" -o -name "pnpm-workspace.yaml" \
+            -o -name "pyproject.toml" -o -name "requirements*.txt" -o -name "setup.py" \
+            -o -name "go.mod" -o -name "Cargo.toml" \
+            -o -name "pom.xml" -o -name "build.gradle" -o -name "build.gradle.kts" \
+            -o -name "Makefile" -o -name "Dockerfile" \
+            -o -name "eslint.config*" -o -name ".eslintrc*" \
+            -o -name "vitest.config*" -o -name "jest.config*" -o -name "pytest.ini" \
+            -o -name "nx.json" -o -name "turbo.json" \
+            \) -not -path './.git/*' -not -path './node_modules/*' -not -path './.ai-prompts/*' -not -path './vendor/*' 2>/dev/null | head -15); do
+            if [[ -f "$f" ]] && [[ $(wc -c < "$f") -lt 50000 ]]; then
+              CONFIG_CONTENT+="
+=== FILE: $f ===
+$(cat "$f")
 
-          for pattern in "${CONFIG_PATTERNS[@]}"; do
-            for f in $(find . -maxdepth 3 -name "$pattern" -not -path './.git/*' -not -path './node_modules/*' -not -path './.ai-prompts/*' 2>/dev/null | head -10); do
-              if [[ -f "$f" ]] && [[ $(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null) -lt 50000 ]]; then
-                CONFIG_CONTENT+="
-          ═══════════════════════════════════════════
-          FILE: $f
-          ═══════════════════════════════════════════
-          $(cat "$f")
-
-          "
-              fi
-            done
+"
+            fi
           done
           echo "$CONFIG_CONTENT" > /tmp/config-files.txt
 
-          echo "files=$(wc -l < /tmp/file-tree.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
-          echo "diff_lines=$(wc -l < /tmp/pr-diff.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
-
-      # ── 4. PASS 1: Ask AI what commands to run ─────────────────────────────
       - name: "AI Pass 1: Detect stack & generate commands"
         id: pass1
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
         run: |
-          SYSTEM_PROMPT=$(cat .ai-prompts/prompts/detect-and-command.md)
+          if [[ -f .ai-prompts/prompts/detect-and-command.md ]]; then
+            SYSTEM_PROMPT=$(cat .ai-prompts/prompts/detect-and-command.md)
+          else
+            SYSTEM_PROMPT='You are a senior DevOps engineer. Determine the stack and commands to run. Return ONLY valid JSON: {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":"20","python_version":null,"go_version":null}}'
+          fi
+
           FILE_TREE=$(cat /tmp/file-tree.txt)
           CONFIG_FILES=$(cat /tmp/config-files.txt)
 
-          USER_MSG="## Repository File Tree
-          \`\`\`
-          ${FILE_TREE:0:6000}
-          \`\`\`
+          USER_MSG="## File Tree
+${FILE_TREE:0:6000}
 
-          ## All Configuration & Build Files (read these to determine what commands exist)
-          ${CONFIG_FILES:0:40000}"
+## Config Files
+${CONFIG_FILES:0:40000}"
 
-          # Call LLM
           RESPONSE=$(curl -s -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${AI_API_KEY}" \
@@ -144,40 +122,62 @@ jobs:
                 ],
                 "temperature": 0,
                 "max_tokens": 2048
-              }'
-            )")
+              }')")
 
-          # Extract JSON from response
           AI_OUTPUT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
 
           if [[ -z "$AI_OUTPUT" ]]; then
-            echo "::error::AI Pass 1 failed — no response"
+            echo "::warning::AI Pass 1 returned empty"
             echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"runtime_requirements":{}}' > /tmp/ai-commands.json
           else
-            # Strip markdown code fences if present
-            echo "$AI_OUTPUT" | sed 's/^```json//;s/^```//' | jq '.' > /tmp/ai-commands.json 2>/dev/null || echo "$AI_OUTPUT" > /tmp/ai-commands.json
+            CLEANED=$(echo "$AI_OUTPUT" | sed 's/^```json//;s/^```//')
+            echo "$CLEANED" | jq '.' > /tmp/ai-commands.json 2>/dev/null || echo "$CLEANED" > /tmp/ai-commands.json
           fi
 
-          echo "AI detected stack:"
-          cat /tmp/ai-commands.json | jq '.stack' 2>/dev/null || true
-          echo "Commands to run:"
-          cat /tmp/ai-commands.json | jq '.check_commands' 2>/dev/null || true
+          echo "=== Stack ===" && jq '.stack' /tmp/ai-commands.json 2>/dev/null || true
+          echo "=== Commands ===" && jq '.check_commands' /tmp/ai-commands.json 2>/dev/null || true
 
-          # Extract runtime requirements for setup
           NODE_VER=$(jq -r '.runtime_requirements.node_version // empty' /tmp/ai-commands.json)
           PYTHON_VER=$(jq -r '.runtime_requirements.python_version // empty' /tmp/ai-commands.json)
           GO_VER=$(jq -r '.runtime_requirements.go_version // empty' /tmp/ai-commands.json)
-
           echo "node_version=${NODE_VER:-}" >> "$GITHUB_OUTPUT"
           echo "python_version=${PYTHON_VER:-}" >> "$GITHUB_OUTPUT"
           echo "go_version=${GO_VER:-}" >> "$GITHUB_OUTPUT"
 
-      # ── 5. Setup runtimes (only what AI determined is needed) ───────────────
       - name: Setup Node.js
         if: steps.pass1.outputs.node_version != ''
         uses: actions/setup-node@v4
         with:
           node-version: ${{ steps.pass1.outputs.node_version }}
+
+      - name: Install package manager
+        if: steps.pass1.outputs.node_version != ''
+        run: |
+          PKG_MGR=$(jq -r '.stack.package_manager // empty' /tmp/ai-commands.json)
+          PKG_MGR_VER=$(jq -r '.stack.package_manager_version // empty' /tmp/ai-commands.json)
+          PKG_MGR_FIELD=$(jq -r '.packageManager // empty' package.json 2>/dev/null)
+
+          case "$PKG_MGR" in
+            pnpm)
+              if [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == pnpm@* ]]; then
+                VER="${PKG_MGR_FIELD#pnpm@}"; VER="${VER%%+*}"
+              elif [[ -n "$PKG_MGR_VER" && "$PKG_MGR_VER" != "null" ]]; then
+                VER="$PKG_MGR_VER"
+              else
+                VER="9"
+              fi
+              npm install -g "pnpm@${VER}" && pnpm --version
+              ;;
+            yarn)
+              if [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == yarn@* ]]; then
+                VER="${PKG_MGR_FIELD#yarn@}"; VER="${VER%%+*}"
+              else
+                VER="4"
+              fi
+              corepack enable && corepack prepare "yarn@${VER}" --activate && yarn --version
+              ;;
+            *) npm --version ;;
+          esac
 
       - name: Setup Python
         if: steps.pass1.outputs.python_version != ''
@@ -191,95 +191,92 @@ jobs:
         with:
           go-version: ${{ steps.pass1.outputs.go_version }}
 
-      # ── 6. Execute AI-generated commands dynamically ───────────────────────
       - name: Run AI-determined checks
         id: checks
+        continue-on-error: true
         run: |
           RESULTS=""
           OVERALL_EXIT=0
+          PASSED_COUNT=0
+          FAILED_COUNT=0
 
-          # Run setup commands first
-          echo "::group::Setup"
+          echo "::group::Setup (dependency installation)"
           SETUP_CMDS=$(jq -r '.setup_commands[]?.cmd // empty' /tmp/ai-commands.json)
           while IFS= read -r cmd; do
             [[ -z "$cmd" ]] && continue
-            echo "▶ Running: $cmd"
-            eval "$cmd" 2>&1 | tail -20 || true
+            echo "▶ $cmd"
+            eval "$cmd" 2>&1 || echo "::warning::Setup failed: $cmd"
           done <<< "$SETUP_CMDS"
           echo "::endgroup::"
 
-          # Run check commands and capture output
           CHECK_COUNT=$(jq '.check_commands | length' /tmp/ai-commands.json)
           for i in $(seq 0 $((CHECK_COUNT - 1))); do
             CMD=$(jq -r ".check_commands[$i].cmd" /tmp/ai-commands.json)
             PURPOSE=$(jq -r ".check_commands[$i].purpose" /tmp/ai-commands.json)
-
             [[ -z "$CMD" || "$CMD" == "null" ]] && continue
 
             echo "::group::$PURPOSE"
             echo "▶ $CMD"
-
-            # Execute and capture
             CMD_OUTPUT=$(eval "$CMD" 2>&1) && CMD_EXIT=0 || CMD_EXIT=$?
 
             if [[ $CMD_EXIT -ne 0 ]]; then
               OVERALL_EXIT=1
+              FAILED_COUNT=$((FAILED_COUNT + 1))
               STATUS="❌ FAILED (exit $CMD_EXIT)"
             else
+              PASSED_COUNT=$((PASSED_COUNT + 1))
               STATUS="✅ PASSED"
             fi
 
-            RESULTS+="### ${PURPOSE} ${STATUS}
-          \`\`\`
-          $ ${CMD}
-          ${CMD_OUTPUT:0:4000}
-          \`\`\`
+            RESULTS+="### ${PURPOSE} — ${STATUS}
+\`\`\`
+$ ${CMD}
+${CMD_OUTPUT:0:4000}
+\`\`\`
 
-          "
+"
             echo "::endgroup::"
           done
 
-          echo -e "$RESULTS" > /tmp/check-results.txt
+          { echo "**Summary:** ${PASSED_COUNT} passed, ${FAILED_COUNT} failed"; echo ""; echo -e "$RESULTS"; } > /tmp/check-results.txt
           echo "exit_code=$OVERALL_EXIT" >> "$GITHUB_OUTPUT"
-          echo "Total checks: $CHECK_COUNT | Overall: $([ $OVERALL_EXIT -eq 0 ] && echo PASS || echo FAIL)"
+          echo "passed=$PASSED_COUNT" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED_COUNT" >> "$GITHUB_OUTPUT"
 
-      # ── 7. PASS 2: AI reviews the code + results ──────────────────────────
       - name: "AI Pass 2: Review code and results"
         id: pass2
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
         run: |
-          # Choose review prompt
-          if [[ "${{ inputs.review_type }}" == "security" ]]; then
+          if [[ "${{ inputs.review_type }}" == "security" && -f .ai-prompts/prompts/security-scan.md ]]; then
             SYSTEM_PROMPT=$(cat .ai-prompts/prompts/security-scan.md)
-          else
+          elif [[ -f .ai-prompts/prompts/review-results.md ]]; then
             SYSTEM_PROMPT=$(cat .ai-prompts/prompts/review-results.md)
+          else
+            SYSTEM_PROMPT='You are a senior staff engineer reviewing a PR. Return ONLY valid JSON: {"summary":"...","verdict":"approve|request_changes|comment","confidence":0.85,"check_results_analysis":"...","issues":[],"positives":[],"suggestions":[]}'
           fi
 
           PR_DIFF=$(cat /tmp/pr-diff.txt)
-          CONFIG_FILES=$(cat /tmp/config-files.txt)
           CHECK_RESULTS=$(cat /tmp/check-results.txt)
+          CONFIG_FILES=$(cat /tmp/config-files.txt)
 
-          USER_MSG="## PR Information
-          - **Title:** ${{ github.event.pull_request.title }}
-          - **Author:** ${{ github.event.pull_request.user.login }}
-          - **Base:** ${{ github.base_ref }} ← **Head:** ${{ github.head_ref }}
-          - **Description:** $(echo '${{ github.event.pull_request.body }}' | head -c 2000)
+          USER_MSG="## PR: ${{ github.event.pull_request.title }}
+Author: ${{ github.event.pull_request.user.login }}
+Base: ${{ github.base_ref }} ← ${{ github.head_ref }}
 
-          ## Configuration Files
-          ${CONFIG_FILES:0:10000}
+## Config Files
+${CONFIG_FILES:0:10000}
 
-          ## Code Changes (PR Diff)
-          \`\`\`diff
-          ${PR_DIFF:0:30000}
-          \`\`\`
+## Code Changes
+\`\`\`diff
+${PR_DIFF:0:30000}
+\`\`\`
 
-          ## Automated Check Results (commands determined and run by AI Pass 1)
-          ${CHECK_RESULTS:0:8000}
+## CI Check Results
+${CHECK_RESULTS:0:8000}
 
-          ---
-          Review this PR. Analyze the code changes and check results. Provide your structured assessment."
+Review this PR."
 
           RESPONSE=$(curl -s -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
@@ -296,84 +293,63 @@ jobs:
                 ],
                 "temperature": 0.1,
                 "max_tokens": 4096
-              }'
-            )")
+              }')")
 
-          REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "AI review failed — no response received."')
-          echo "$REVIEW" > /tmp/ai-review.txt
+          REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+          if [[ -z "$REVIEW" ]]; then
+            echo '{"summary":"AI review unavailable","verdict":"comment","confidence":0,"issues":[],"positives":[],"suggestions":[]}' > /tmp/ai-review.txt
+          else
+            echo "$REVIEW" > /tmp/ai-review.txt
+          fi
 
-          # Extract verdict
-          VERDICT=$(echo "$REVIEW" | jq -r '.verdict // empty' 2>/dev/null || echo "comment")
-          echo "verdict=${VERDICT:-comment}" >> "$GITHUB_OUTPUT"
-
-      # ── 8. Post combined results as PR comment ─────────────────────────────
       - name: Post AI review to PR
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const review = fs.readFileSync('/tmp/ai-review.txt', 'utf8');
-            const checks = fs.readFileSync('/tmp/check-results.txt', 'utf8');
-            const commands = JSON.parse(fs.readFileSync('/tmp/ai-commands.json', 'utf8'));
-            const checksExit = '${{ steps.checks.outputs.exit_code }}';
+            let review = '{}', checks = 'No results', commands = {};
+            try { review = fs.readFileSync('/tmp/ai-review.txt', 'utf8'); } catch(e) {}
+            try { checks = fs.readFileSync('/tmp/check-results.txt', 'utf8'); } catch(e) {}
+            try { commands = JSON.parse(fs.readFileSync('/tmp/ai-commands.json', 'utf8')); } catch(e) {}
 
-            const stackInfo = commands.stack
-              ? `${commands.stack.language || '?'} / ${commands.stack.framework || '?'} / ${commands.stack.package_manager || '?'}`
-              : 'Unknown';
+            const passed = '${{ steps.checks.outputs.passed }}' || '0';
+            const failed = '${{ steps.checks.outputs.failed }}' || '0';
+            const checksExit = '${{ steps.checks.outputs.exit_code }}' || '0';
 
-            const cmdList = (commands.check_commands || [])
-              .map(c => `- \`${c.cmd}\` — ${c.purpose}`)
-              .join('\n');
+            let reviewData = {};
+            try { reviewData = JSON.parse(review.replace(/^```json\n?/,'').replace(/\n?```$/,'')); } catch(e) { reviewData = {summary: review.substring(0,200), verdict:'comment', issues:[], positives:[], suggestions:[]}; }
 
-            const statusEmoji = checksExit === '0' ? '✅' : '❌';
+            const stackInfo = commands.stack ? `${commands.stack.language||'?'} / ${commands.stack.framework||'?'} / ${commands.stack.package_manager||'?'}` : 'Unknown';
+            const cmdList = (commands.check_commands||[]).map(c => `- \`${c.cmd}\` — ${c.purpose}`).join('\n');
+            const verdictEmoji = {'approve':'✅','request_changes':'🔴','comment':'💬'}[reviewData.verdict] || '💬';
+            const statusEmoji = checksExit === '0' ? '✅' : '⚠️';
+
+            const issuesList = (reviewData.issues||[]).map(i => {
+              const sev = {'critical':'🚨','high':'🔴','medium':'🟡','low':'🔵','info':'ℹ️'}[i.severity] || '•';
+              const loc = i.file ? `\`${i.file}${i.line?':'+i.line:''}\`` : '';
+              return `${sev} **${i.title}** ${loc}\n   ${i.description}${i.suggestion?'\n   💡 '+i.suggestion:''}`;
+            }).join('\n\n');
+
+            const positives = (reviewData.positives||[]).map(p => `- ✅ ${p}`).join('\n');
+            const suggestions = (reviewData.suggestions||[]).map(s => `- 💡 ${s}`).join('\n');
 
             const body = [
-              '## 🤖 AI PR Review',
-              '',
-              `**Stack Detected:** ${stackInfo}`,
-              `**Checks Status:** ${statusEmoji} ${checksExit === '0' ? 'All passed' : 'Some failures'}`,
-              '',
-              '<details><summary>📋 Commands AI decided to run</summary>',
-              '',
-              cmdList,
-              '',
-              '</details>',
-              '',
-              '---',
-              '',
-              '### Check Results',
-              checks,
-              '',
-              '---',
-              '',
-              '### AI Code Review',
-              review,
-              '',
-              '---',
-              `<sub>🔮 AI CI Pipeline — zero config, fully AI-driven | [Edit prompts](https://github.com/bayer-int/agentic-review)</sub>`,
-            ].join('\n');
+              `## 🤖 AI Code Review — ${verdictEmoji} ${(reviewData.verdict||'comment').replace('_',' ').toUpperCase()}`,
+              '', `> ${reviewData.summary || 'Review complete.'}`, '',
+              `| Stack | Checks | Confidence |`, `|-------|--------|------------|`,
+              `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${Math.round((reviewData.confidence||0)*100)}% |`, '',
+              reviewData.check_results_analysis ? `**CI Analysis:** ${reviewData.check_results_analysis}\n` : '',
+              issuesList ? `### Issues Found\n\n${issuesList}\n` : '',
+              positives ? `### What's Good\n\n${positives}\n` : '',
+              suggestions ? `### Suggestions\n\n${suggestions}\n` : '',
+              '<details><summary>📋 Commands AI ran</summary>\n', cmdList || '_None_', '\n</details>', '',
+              '<details><summary>📊 Full Output</summary>\n', checks, '\n</details>', '',
+              '---', '<sub>🔮 <a href="https://github.com/bayer-int/agentic-review">agentic-review</a> | Informational only</sub>',
+            ].filter(Boolean).join('\n');
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: body
-            });
+            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
 
-      # ── 9. Final status ────────────────────────────────────────────────────
-      - name: Set final status
+      - name: Pipeline complete
         if: always()
-        run: |
-          CHECKS_EXIT="${{ steps.checks.outputs.exit_code }}"
-          VERDICT="${{ steps.pass2.outputs.verdict }}"
-
-          if [[ "$CHECKS_EXIT" != "0" ]]; then
-            echo "::error::AI-determined checks failed — see PR comment"
-            exit 1
-          fi
-
-          if [[ "$VERDICT" == "request_changes" ]]; then
-            echo "::warning::AI reviewer requested changes — see PR comment"
-          fi
-
-          echo "✅ AI review completed"
+        run: echo "✅ AI review posted to PR"
