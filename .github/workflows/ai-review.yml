@@ -15,6 +15,9 @@ on:
       AI_API_ENDPOINT:
         description: 'LLM API endpoint URL'
         required: true
+      ORG_PAT:
+        description: 'Org-level PAT with repo read access (for checking out agentic-review prompts)'
+        required: true
 
 permissions:
   contents: read
@@ -42,7 +45,7 @@ jobs:
           repository: bayer-int/agentic-review
           ref: main
           path: .ai-prompts
-          token: ${{ github.token }}
+          token: ${{ secrets.ORG_PAT }}
 
       - name: Gather repository context
         id: context
