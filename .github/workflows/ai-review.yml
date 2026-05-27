@@ -354,6 +354,107 @@ jobs:
           echo "failed=$FAILED_COUNT" >> "$GITHUB_OUTPUT"
           echo "setup_failed=$SETUP_FAILED" >> "$GITHUB_OUTPUT"
 
+      - name: "Docker Build & Trivy Security Scan"
+        id: docker
+        continue-on-error: true
+        run: |
+          set +e
+          echo "======================================================="
+          echo "DOCKER BUILD & SECURITY SCAN"
+          echo "======================================================="
+
+          # Auto-detect Dockerfiles in the repo
+          DOCKERFILES=$(find . -maxdepth 3 \( -name "Dockerfile" -o -name "Dockerfile.*" -o -name "*.Dockerfile" \) \
+            -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*' 2>/dev/null)
+
+          if [[ -z "$DOCKERFILES" ]]; then
+            echo "  No Dockerfile found — skipping Docker build & scan"
+            echo "docker_found=false" >> "$GITHUB_OUTPUT"
+            echo "" > /tmp/docker-results.txt
+            exit 0
+          fi
+
+          echo "docker_found=true" >> "$GITHUB_OUTPUT"
+          DOCKER_RESULTS=""
+          DOCKER_EXIT=0
+
+          # Install Trivy for container scanning
+          echo "--- Installing Trivy scanner ---"
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin 2>&1 || {
+            echo "::warning::Failed to install Trivy — skipping security scan"
+            TRIVY_AVAILABLE=false
+          }
+          TRIVY_AVAILABLE=${TRIVY_AVAILABLE:-true}
+
+          while IFS= read -r dockerfile; do
+            [[ -z "$dockerfile" ]] && continue
+            echo ""
+            echo "  === Building: ${dockerfile} ==="
+
+            # Determine build context (directory containing the Dockerfile)
+            BUILD_CONTEXT=$(dirname "$dockerfile")
+            IMAGE_TAG="agentic-review-scan:$(echo "$dockerfile" | md5sum | cut -c1-8)"
+
+            # Check if Dockerfile uses ARG/ENV that need build args
+            BUILD_ARGS=""
+            REQUIRED_ARGS=$(grep -E "^ARG " "$dockerfile" 2>/dev/null | grep -v "=" | awk '{print $2}' | cut -d'=' -f1)
+            if [[ -n "$REQUIRED_ARGS" ]]; then
+              echo "  Detected required build args (providing dummy values for build verification):"
+              while IFS= read -r arg; do
+                [[ -z "$arg" ]] && continue
+                echo "    --build-arg ${arg}=placeholder"
+                BUILD_ARGS+=" --build-arg ${arg}=placeholder"
+              done <<< "$REQUIRED_ARGS"
+            fi
+
+            # Run Docker build
+            echo "  > docker build -t ${IMAGE_TAG} -f ${dockerfile} ${BUILD_ARGS} ${BUILD_CONTEXT}"
+            BUILD_OUTPUT=$(docker build -t "${IMAGE_TAG}" -f "${dockerfile}" ${BUILD_ARGS} "${BUILD_CONTEXT}" 2>&1)
+            BUILD_EXIT=$?
+
+            if [[ $BUILD_EXIT -ne 0 ]]; then
+              DOCKER_EXIT=1
+              echo "  RESULT: BUILD FAILED (exit ${BUILD_EXIT})"
+              DOCKER_RESULTS+="### Docker Build: ${dockerfile} -- FAILED (exit ${BUILD_EXIT})"$'\n'
+              DOCKER_RESULTS+='```'$'\n'
+              DOCKER_RESULTS+="${BUILD_OUTPUT:(-3000)}"$'\n'
+              DOCKER_RESULTS+='```'$'\n\n'
+            else
+              echo "  RESULT: BUILD PASSED"
+              DOCKER_RESULTS+="### Docker Build: ${dockerfile} -- PASSED"$'\n\n'
+
+              # Run Trivy vulnerability scan on the built image
+              if [[ "$TRIVY_AVAILABLE" == "true" ]]; then
+                echo "  --- Running Trivy security scan on ${IMAGE_TAG} ---"
+                TRIVY_OUTPUT=$(trivy image --severity HIGH,CRITICAL --no-progress --exit-code 1 "${IMAGE_TAG}" 2>&1)
+                TRIVY_EXIT=$?
+
+                if [[ $TRIVY_EXIT -ne 0 ]]; then
+                  echo "  RESULT: TRIVY FOUND VULNERABILITIES"
+                  DOCKER_RESULTS+="### Trivy Scan: ${dockerfile} -- VULNERABILITIES FOUND"$'\n'
+                  DOCKER_RESULTS+='```'$'\n'
+                  DOCKER_RESULTS+="${TRIVY_OUTPUT:0:4000}"$'\n'
+                  DOCKER_RESULTS+='```'$'\n\n'
+                else
+                  echo "  RESULT: TRIVY PASSED (no HIGH/CRITICAL vulnerabilities)"
+                  DOCKER_RESULTS+="### Trivy Scan: ${dockerfile} -- PASSED (no HIGH/CRITICAL)"$'\n\n'
+                fi
+              fi
+            fi
+
+            # Clean up image
+            docker rmi "${IMAGE_TAG}" 2>/dev/null || true
+
+          done <<< "$DOCKERFILES"
+
+          echo ""
+          echo "======================================================="
+          echo "DOCKER RESULTS: build exit=$DOCKER_EXIT"
+          echo "======================================================="
+
+          echo "$DOCKER_RESULTS" > /tmp/docker-results.txt
+          echo "docker_exit=$DOCKER_EXIT" >> "$GITHUB_OUTPUT"
+
       - name: "AI Pass 2: Review code and results"
         id: pass2
         continue-on-error: true
@@ -378,6 +479,7 @@ jobs:
           PR_DIFF=$(cat /tmp/pr-diff.txt 2>/dev/null || echo "")
           CHECK_RESULTS=$(cat /tmp/check-results.txt 2>/dev/null || echo "No checks were run")
           CONFIG_FILES=$(cat /tmp/config-files.txt 2>/dev/null || echo "")
+          DOCKER_RESULTS=$(cat /tmp/docker-results.txt 2>/dev/null || echo "")
 
           USER_MSG="## Pull Request: ${{ github.event.pull_request.title }}
           Author: ${{ github.event.pull_request.user.login }}
@@ -393,7 +495,10 @@ jobs:
           ## CI Check Results (just executed)
           ${CHECK_RESULTS:0:10000}
 
-          Review this PR thoroughly."
+          ## Docker Build & Trivy Scan Results
+          ${DOCKER_RESULTS:0:5000}
+
+          Review this PR thoroughly. If there are Trivy vulnerabilities, highlight them as security issues."
 
           RESPONSE=$(curl -sS -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
@@ -433,15 +538,18 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let review = '{}', checks = 'No results', commands = {};
+            let review = '{}', checks = 'No results', commands = {}, dockerResults = '';
             try { review = fs.readFileSync('/tmp/ai-review.txt', 'utf8'); } catch(e) {}
             try { checks = fs.readFileSync('/tmp/check-results.txt', 'utf8'); } catch(e) {}
             try { commands = JSON.parse(fs.readFileSync('/tmp/ai-commands.json', 'utf8')); } catch(e) {}
+            try { dockerResults = fs.readFileSync('/tmp/docker-results.txt', 'utf8').trim(); } catch(e) {}
 
             const passed = '${{ steps.checks.outputs.passed }}' || '0';
             const failed = '${{ steps.checks.outputs.failed }}' || '0';
             const checksExit = '${{ steps.checks.outputs.exit_code }}' || '0';
             const setupFailed = '${{ steps.checks.outputs.setup_failed }}' === 'true';
+            const dockerFound = '${{ steps.docker.outputs.docker_found }}' === 'true';
+            const dockerExit = '${{ steps.docker.outputs.docker_exit }}' || '0';
 
             let reviewData = {};
             try {
@@ -498,6 +606,8 @@ jobs:
               checks,
               '',
               '</details>',
+              '',
+              dockerFound ? '<details><summary>Docker Build & Trivy Scan</summary>\n\n' + dockerResults + '\n\n</details>\n' : '',
               '',
               '---',
               '<sub>Powered by <a href="https://github.com/bayer-int/agentic-review">agentic-review</a> | Informational only - does not block merging</sub>',
