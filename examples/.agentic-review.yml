@@ -1,0 +1,18 @@
+# ─────────────────────────────────────────────────────────────────────
+# .agentic-review.yml — Optional per-repo configuration
+# ─────────────────────────────────────────────────────────────────────
+# Place this file in your repository root to customize the AI review.
+# All settings are optional — defaults are shown below.
+# ─────────────────────────────────────────────────────────────────────
+
+# Skip Docker build + Trivy scan (useful for repos without Dockerfiles)
+skip_docker: false
+
+# Skip security scans (gitleaks, sensitive files, EOF, etc.)
+skip_security: false
+
+# Skip AI-determined quality checks (lint, test, build)
+skip_checks: false
+
+# Maximum diff lines to send to AI (larger = better context but slower)
+max_diff_lines: 15000

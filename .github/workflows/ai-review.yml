@@ -39,12 +39,57 @@ jobs:
       cancel-in-progress: true
 
     steps:
+      - name: Check for skip label
+        id: skip_check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.pull_request?.labels?.map(l => l.name) || [];
+            const skip = labels.includes('skip-ai-review') || labels.includes('no-review');
+            if (skip) {
+              core.info('Skipping AI review — PR has skip label');
+            }
+            core.setOutput('skip', skip.toString());
+
+      - name: Start timer
+        if: steps.skip_check.outputs.skip != 'true'
+        id: timer
+        run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout caller repo
+        if: steps.skip_check.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Load repo config (.agentic-review.yml)
+        if: steps.skip_check.outputs.skip != 'true'
+        id: config
+        run: |
+          # Load optional per-repo configuration
+          if [[ -f ".agentic-review.yml" ]]; then
+            echo "  Found .agentic-review.yml — loading config"
+            echo "has_config=true" >> "$GITHUB_OUTPUT"
+            # Extract settings (simple key: value parsing)
+            SKIP_DOCKER=$(grep -E "^skip_docker:" .agentic-review.yml 2>/dev/null | awk '{print $2}' || echo "false")
+            SKIP_SECURITY=$(grep -E "^skip_security:" .agentic-review.yml 2>/dev/null | awk '{print $2}' || echo "false")
+            SKIP_CHECKS=$(grep -E "^skip_checks:" .agentic-review.yml 2>/dev/null | awk '{print $2}' || echo "false")
+            MAX_DIFF_LINES=$(grep -E "^max_diff_lines:" .agentic-review.yml 2>/dev/null | awk '{print $2}' || echo "15000")
+            echo "skip_docker=${SKIP_DOCKER}" >> "$GITHUB_OUTPUT"
+            echo "skip_security=${SKIP_SECURITY}" >> "$GITHUB_OUTPUT"
+            echo "skip_checks=${SKIP_CHECKS}" >> "$GITHUB_OUTPUT"
+            echo "max_diff_lines=${MAX_DIFF_LINES}" >> "$GITHUB_OUTPUT"
+          else
+            echo "  No .agentic-review.yml found — using defaults"
+            echo "has_config=false" >> "$GITHUB_OUTPUT"
+            echo "skip_docker=false" >> "$GITHUB_OUTPUT"
+            echo "skip_security=false" >> "$GITHUB_OUTPUT"
+            echo "skip_checks=false" >> "$GITHUB_OUTPUT"
+            echo "max_diff_lines=15000" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Gather repository context
+        if: steps.skip_check.outputs.skip != 'true'
         id: context
         run: |
           echo ""
@@ -99,9 +144,24 @@ jobs:
           done
           echo "$CONFIG_CONTENT" > /tmp/config-files.txt
           echo "  Config files found: ${CONFIG_COUNT}"
+
+          # PR size analysis
+          echo "diff_lines=${DIFF_LINES}" >> "$GITHUB_OUTPUT"
+          echo "changed_files=${CHANGED_FILES}" >> "$GITHUB_OUTPUT"
+
+          PR_SIZE="normal"
+          if [[ $DIFF_LINES -gt 2000 ]]; then PR_SIZE="large"; fi
+          if [[ $DIFF_LINES -gt 5000 ]]; then PR_SIZE="very_large"; fi
+          echo "pr_size=${PR_SIZE}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$PR_SIZE" == "very_large" ]]; then
+            echo "  ⚠ PR is very large (${DIFF_LINES} lines). AI review quality may be reduced."
+            echo "  Consider splitting into smaller PRs for better reviews."
+          fi
           echo ""
 
       - name: "AI Pass 1: Detect stack & generate commands"
+        if: steps.skip_check.outputs.skip != 'true'
         id: pass1
         continue-on-error: true
         env:
@@ -288,6 +348,7 @@ jobs:
           go-version: ${{ steps.pass1.outputs.go_version }}
 
       - name: Run AI-determined checks
+        if: steps.skip_check.outputs.skip != 'true' && steps.config.outputs.skip_checks != 'true'
         id: checks
         continue-on-error: true
         run: |
@@ -390,6 +451,7 @@ jobs:
           echo "setup_failed=$SETUP_FAILED" >> "$GITHUB_OUTPUT"
 
       - name: "Docker Build & Trivy Security Scan"
+        if: steps.skip_check.outputs.skip != 'true' && steps.config.outputs.skip_docker != 'true'
         id: docker
         continue-on-error: true
         run: |
@@ -493,6 +555,7 @@ jobs:
           echo "docker_exit=$DOCKER_EXIT" >> "$GITHUB_OUTPUT"
 
       - name: "Security Scans (Gitleaks, File Hygiene, Sensitive Data)"
+        if: steps.skip_check.outputs.skip != 'true' && steps.config.outputs.skip_security != 'true'
         id: security
         continue-on-error: true
         run: |
@@ -777,7 +840,67 @@ jobs:
           echo "$SECURITY_RESULTS" > /tmp/security-results.txt
           echo "security_exit=$SECURITY_EXIT" >> "$GITHUB_OUTPUT"
 
+      - name: "Dependency Vulnerability Audit"
+        if: steps.skip_check.outputs.skip != 'true'
+        id: dep_audit
+        continue-on-error: true
+        run: |
+          set +e
+          echo ""
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  Dependency Vulnerability Audit                      │"
+          echo "└─────────────────────────────────────────────────────┘"
+          echo ""
+
+          AUDIT_RESULTS=""
+          STACK=$(jq -r '.stack.language // "unknown"' /tmp/ai-commands.json 2>/dev/null)
+          PKG_MGR=$(jq -r '.stack.package_manager // "unknown"' /tmp/ai-commands.json 2>/dev/null)
+
+          case "$PKG_MGR" in
+            npm|pnpm|yarn)
+              echo "  Running npm audit..."
+              AUDIT_OUTPUT=$(npm audit --production 2>&1) && AUDIT_EXIT=0 || AUDIT_EXIT=$?
+              if [[ $AUDIT_EXIT -ne 0 ]]; then
+                VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Severity:" 2>/dev/null || echo "?")
+                echo "  ⚠ Found vulnerabilities"
+                AUDIT_RESULTS="### Dependency Audit (npm) -- ⚠ Vulnerabilities Found"$'\n'
+                AUDIT_RESULTS+='```'$'\n'
+                AUDIT_RESULTS+="${AUDIT_OUTPUT:0:3000}"$'\n'
+                AUDIT_RESULTS+='```'$'\n\n'
+              else
+                echo "  ✅ No known vulnerabilities"
+                AUDIT_RESULTS="### Dependency Audit (npm) -- ✅ PASSED"$'\n\n'
+              fi
+              ;;
+            pip)
+              if command -v pip-audit &>/dev/null || pip install pip-audit -q 2>/dev/null; then
+                echo "  Running pip-audit..."
+                AUDIT_OUTPUT=$(pip-audit 2>&1) && AUDIT_EXIT=0 || AUDIT_EXIT=$?
+                if [[ $AUDIT_EXIT -ne 0 ]]; then
+                  echo "  ⚠ Found vulnerabilities"
+                  AUDIT_RESULTS="### Dependency Audit (pip) -- ⚠ Vulnerabilities Found"$'\n'
+                  AUDIT_RESULTS+='```'$'\n'
+                  AUDIT_RESULTS+="${AUDIT_OUTPUT:0:3000}"$'\n'
+                  AUDIT_RESULTS+='```'$'\n\n'
+                else
+                  echo "  ✅ No known vulnerabilities"
+                  AUDIT_RESULTS="### Dependency Audit (pip) -- ✅ PASSED"$'\n\n'
+                fi
+              else
+                echo "  Skipping pip-audit (not available)"
+                AUDIT_RESULTS="### Dependency Audit (pip) -- SKIPPED"$'\n\n'
+              fi
+              ;;
+            *)
+              echo "  No dependency audit available for: $PKG_MGR"
+              AUDIT_RESULTS="### Dependency Audit -- SKIPPED (unsupported: $PKG_MGR)"$'\n\n'
+              ;;
+          esac
+
+          echo "$AUDIT_RESULTS" > /tmp/audit-results.txt
+
       - name: "AI Pass 2: Review code and results"
+        if: steps.skip_check.outputs.skip != 'true'
         id: pass2
         continue-on-error: true
         env:
@@ -826,6 +949,7 @@ jobs:
           CONFIG_FILES=$(cat /tmp/config-files.txt 2>/dev/null || echo "")
           DOCKER_RESULTS=$(cat /tmp/docker-results.txt 2>/dev/null || echo "")
           SECURITY_RESULTS=$(cat /tmp/security-results.txt 2>/dev/null || echo "No security scans were run")
+          AUDIT_RESULTS=$(cat /tmp/audit-results.txt 2>/dev/null || echo "")
 
           USER_MSG="## Pull Request: ${{ github.event.pull_request.title }}
           Author: ${{ github.event.pull_request.user.login }}
@@ -847,7 +971,10 @@ jobs:
           ## Security Scan Results (Gitleaks, Sensitive Files, EOF, Large Files)
           ${SECURITY_RESULTS:0:5000}
 
-          Review this PR thoroughly. Pay special attention to any security findings from gitleaks or Trivy."
+          ## Dependency Vulnerability Audit
+          ${AUDIT_RESULTS:0:3000}
+
+          Review this PR thoroughly. Pay special attention to any security findings from gitleaks or Trivy, and flag any dependency vulnerabilities."
 
           RESPONSE=$(curl -sS -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
@@ -882,17 +1009,18 @@ jobs:
           fi
 
       - name: Post review to PR
-        if: always()
+        if: always() && steps.skip_check.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            let review = '{}', checks = 'No results', commands = {}, dockerResults = '', securityResults = '';
+            let review = '{}', checks = 'No results', commands = {}, dockerResults = '', securityResults = '', auditResults = '';
             try { review = fs.readFileSync('/tmp/ai-review.txt', 'utf8'); } catch(e) {}
             try { checks = fs.readFileSync('/tmp/check-results.txt', 'utf8'); } catch(e) {}
             try { commands = JSON.parse(fs.readFileSync('/tmp/ai-commands.json', 'utf8')); } catch(e) {}
             try { dockerResults = fs.readFileSync('/tmp/docker-results.txt', 'utf8').trim(); } catch(e) {}
             try { securityResults = fs.readFileSync('/tmp/security-results.txt', 'utf8').trim(); } catch(e) {}
+            try { auditResults = fs.readFileSync('/tmp/audit-results.txt', 'utf8').trim(); } catch(e) {}
 
             const passed = '${{ steps.checks.outputs.passed }}' || '0';
             const failed = '${{ steps.checks.outputs.failed }}' || '0';
@@ -901,6 +1029,14 @@ jobs:
             const dockerFound = '${{ steps.docker.outputs.docker_found }}' === 'true';
             const dockerExit = '${{ steps.docker.outputs.docker_exit }}' || '0';
             const securityExit = '${{ steps.security.outputs.security_exit }}' || '0';
+            const prSize = '${{ steps.context.outputs.pr_size }}' || 'normal';
+            const diffLines = '${{ steps.context.outputs.diff_lines }}' || '0';
+            const changedFiles = '${{ steps.context.outputs.changed_files }}' || '0';
+
+            // Calculate pipeline duration
+            const startTime = parseInt('${{ steps.timer.outputs.start }}' || '0');
+            const duration = startTime ? Math.round((Date.now() / 1000) - startTime) : 0;
+            const durationStr = duration > 60 ? `${Math.floor(duration/60)}m ${duration%60}s` : `${duration}s`;
 
             let reviewData = {};
             try {
@@ -924,28 +1060,35 @@ jobs:
             const issuesList = (reviewData.issues || []).map(i => {
               const sev = { critical: '\ud83d\udea8', high: '\ud83d\udd34', medium: '\ud83d\udfe1', low: '\ud83d\udd35', info: '\u2139\ufe0f' }[i.severity] || '-';
               const loc = i.file ? `\`${i.file}${i.line ? ':' + i.line : ''}\`` : '';
-              return `${sev} **${i.title}** ${loc}\n   ${i.description}${i.suggestion ? '\n   Suggestion: ' + i.suggestion : ''}`;
+              return `${sev} **${i.title}** ${loc}\n   ${i.description}${i.suggestion ? '\n   \ud83d\udca1 ' + i.suggestion : ''}`;
             }).join('\n\n');
 
             const positives = (reviewData.positives || []).map(p => `- ${p}`).join('\n');
             const suggestions = (reviewData.suggestions || []).map(s => `- ${s}`).join('\n');
 
+            // PR size warning
+            const sizeWarning = prSize === 'very_large'
+              ? `\n> \u26a0\ufe0f **Large PR** (${diffLines} lines across ${changedFiles} files). Consider splitting for better review quality.\n`
+              : prSize === 'large'
+              ? `\n> \ud83d\udcdd PR has ${diffLines} lines across ${changedFiles} files.\n`
+              : '';
+
             const body = [
-              `## AI Code Review - ${verdictEmoji} ${(reviewData.verdict || 'comment').replace('_', ' ').toUpperCase()}`,
+              `## \ud83e\udd16 AI Code Review \u2014 ${verdictEmoji} ${(reviewData.verdict || 'comment').replace('_', ' ').toUpperCase()}`,
               '',
               `> ${reviewData.summary || 'Review complete.'}`,
-              '',
-              `| Stack | Checks | Confidence |`,
-              `|-------|--------|------------|`,
-              `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${Math.round((reviewData.confidence || 0) * 100)}% |`,
+              sizeWarning,
+              `| Stack | Checks | Security | Confidence | Duration |`,
+              `|-------|--------|----------|------------|----------|`,
+              `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${securityExit === '0' ? '\u2705' : '\u26a0\ufe0f'} | ${Math.round((reviewData.confidence || 0) * 100)}% | ${durationStr} |`,
               '',
               reviewData.check_results_analysis ? `### CI Analysis\n${reviewData.check_results_analysis}\n` : '',
               reviewData.security_analysis ? `### Security Analysis\n${reviewData.security_analysis}\n` : '',
               issuesList ? `### Issues Found\n\n${issuesList}\n` : '',
-              positives ? `### What is Good\n\n${positives}\n` : '',
-              suggestions ? `### Suggestions\n\n${suggestions}\n` : '',
+              positives ? `### \u2705 What\u2019s Good\n\n${positives}\n` : '',
+              suggestions ? `### \ud83d\udca1 Suggestions\n\n${suggestions}\n` : '',
               '',
-              '<details><summary>Commands AI decided to run</summary>',
+              '<details><summary>\ud83d\udccb Commands AI decided to run</summary>',
               '',
               '| Command | Purpose | Confidence |',
               '|---------|---------|------------|',
@@ -953,52 +1096,97 @@ jobs:
               '',
               '</details>',
               '',
-              '<details><summary>Full Check Output</summary>',
+              '<details><summary>\ud83d\udcca Full Check Output</summary>',
               '',
               checks,
               '',
               '</details>',
               '',
-              dockerFound ? '<details><summary>Docker Build & Trivy Scan</summary>\n\n' + dockerResults + '\n\n</details>\n' : '',
-              securityResults ? '<details><summary>Security & File Hygiene Scans</summary>\n\n' + securityResults + '\n\n</details>\n' : '',
+              dockerFound ? '<details><summary>\ud83d\udc33 Docker Build & Trivy Scan</summary>\n\n' + dockerResults + '\n\n</details>\n' : '',
+              securityResults ? '<details><summary>\ud83d\udd12 Security & File Hygiene Scans</summary>\n\n' + securityResults + '\n\n</details>\n' : '',
+              auditResults ? '<details><summary>\ud83d\udce6 Dependency Vulnerability Audit</summary>\n\n' + auditResults + '\n\n</details>\n' : '',
               '',
               '---',
-              '<sub>Powered by <a href="https://github.com/bayer-int/agentic-review">agentic-review</a> | Informational only - does not block merging</sub>',
+              `<sub>\ud83e\udd16 Powered by <a href="https://github.com/bayer-int/agentic-review">agentic-review</a> | Informational only \u2014 does not block merging | ${changedFiles} files, ${diffLines} lines reviewed in ${durationStr}</sub>`,
             ].filter(Boolean).join('\n');
 
-            await github.rest.issues.createComment({
+            // Update existing comment instead of creating a new one (prevent spam)
+            const COMMENT_MARKER = '## \ud83e\udd16 AI Code Review';
+            const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: body
+              per_page: 50
             });
-            console.log('Review posted to PR #' + context.issue.number);
+
+            const existingComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.startsWith(COMMENT_MARKER)
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: body
+              });
+              console.log('Updated existing review comment #' + existingComment.id);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+              console.log('Created new review comment on PR #' + context.issue.number);
+            }
 
       - name: Write step summary
         if: always()
         run: |
           set +e
-          echo "## AI Code Review Results" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          LANG=$(jq -r '.stack.language // "unknown"' /tmp/ai-commands.json 2>/dev/null || echo "unknown")
-          FRAMEWORK=$(jq -r '.stack.framework // "unknown"' /tmp/ai-commands.json 2>/dev/null || echo "unknown")
-          PKG=$(jq -r '.stack.package_manager // "unknown"' /tmp/ai-commands.json 2>/dev/null || echo "unknown")
-          echo "**Stack:** ${LANG} / ${FRAMEWORK} / ${PKG}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          PASSED="${{ steps.checks.outputs.passed }}"
-          FAILED="${{ steps.checks.outputs.failed }}"
-          EXIT_CODE="${{ steps.checks.outputs.exit_code }}"
-          if [[ -z "$PASSED" && -z "$FAILED" ]]; then
-            echo "**Checks:** No checks were executed (AI detection may have failed)" >> "$GITHUB_STEP_SUMMARY"
-          elif [[ "$EXIT_CODE" == "0" ]]; then
-            echo "**Checks:** All ${PASSED} checks passed" >> "$GITHUB_STEP_SUMMARY"
+
+          # Calculate duration
+          START="${{ steps.timer.outputs.start }}"
+          if [[ -n "$START" ]]; then
+            DURATION=$(( $(date +%s) - START ))
+            DURATION_STR="${DURATION}s"
+            [[ $DURATION -gt 60 ]] && DURATION_STR="$((DURATION/60))m $((DURATION%60))s"
           else
-            echo "**Checks:** ${PASSED} passed, ${FAILED} failed" >> "$GITHUB_STEP_SUMMARY"
+            DURATION_STR="N/A"
           fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Commands Executed" >> "$GITHUB_STEP_SUMMARY"
-          jq -r '.check_commands[]? | "- \(.cmd) -- \(.purpose)"' /tmp/ai-commands.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "- _None_" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo "## 🤖 AI Code Review Dashboard"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+
+            LANG=$(jq -r '.stack.language // "unknown"' /tmp/ai-commands.json 2>/dev/null || echo "unknown")
+            FRAMEWORK=$(jq -r '.stack.framework // "unknown"' /tmp/ai-commands.json 2>/dev/null || echo "unknown")
+            PKG=$(jq -r '.stack.package_manager // "unknown"' /tmp/ai-commands.json 2>/dev/null || echo "unknown")
+            echo "| **Stack** | ${LANG} / ${FRAMEWORK} / ${PKG} |"
+
+            PASSED="${{ steps.checks.outputs.passed }}"
+            FAILED="${{ steps.checks.outputs.failed }}"
+            EXIT_CODE="${{ steps.checks.outputs.exit_code }}"
+            if [[ -z "$PASSED" && -z "$FAILED" ]]; then
+              echo "| **Checks** | No checks executed |"
+            elif [[ "$EXIT_CODE" == "0" ]]; then
+              echo "| **Checks** | ✅ All ${PASSED} passed |"
+            else
+              echo "| **Checks** | ⚠️ ${PASSED} passed, ${FAILED} failed |"
+            fi
+
+            echo "| **Security** | Exit: ${{ steps.security.outputs.security_exit }} |"
+            echo "| **Docker** | Found: ${{ steps.docker.outputs.docker_found }}, Exit: ${{ steps.docker.outputs.docker_exit }} |"
+            echo "| **Duration** | ${DURATION_STR} |"
+            echo "| **PR Size** | ${{ steps.context.outputs.diff_lines }} lines, ${{ steps.context.outputs.changed_files }} files |"
+            echo ""
+            echo "### Commands Executed"
+            jq -r '.check_commands[]? | "- `\(.cmd)` — \(.purpose)"' /tmp/ai-commands.json 2>/dev/null || echo "- _None_"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Done
         if: always()

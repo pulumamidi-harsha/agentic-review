@@ -459,3 +459,99 @@ For Node.js repos using Bayer Artifactory, pass `ARTIFACTORY_USERNAME` and `ARTI
 
 **Q: Can I use this across the org?**  
 Yes. Set `AI_API_KEY` and `AI_API_ENDPOINT` as organization-level secrets, and every repo only needs the caller workflow file.
+
+---
+
+## Per-Repository Configuration
+
+Optionally create a `.agentic-review.yml` file in your repository root to customize behavior:
+
+```yaml
+# .agentic-review.yml — All settings are optional
+skip_docker: false        # Skip Docker build + Trivy scan
+skip_security: false      # Skip security scans (gitleaks, etc.)
+skip_checks: false        # Skip AI-determined quality checks
+max_diff_lines: 15000     # Max diff lines sent to AI
+```
+
+See [`examples/.agentic-review.yml`](examples/.agentic-review.yml) for a full template with comments.
+
+---
+
+## Skip Labels
+
+Add one of these labels to a PR to skip the AI review entirely:
+
+- `skip-ai-review`
+- `no-review`
+
+Useful for documentation-only PRs, dependency bumps, or when the AI review is not needed.
+
+---
+
+## Dependency Vulnerability Audit
+
+The pipeline automatically runs dependency vulnerability checks based on your stack:
+
+| Stack | Audit Command |
+|-------|---------------|
+| **Node.js** | `npm audit --audit-level=moderate` |
+| **Python** | `pip-audit` (auto-installed) |
+
+Results appear in the PR comment as a collapsible "Dependency Vulnerability Audit" section and are fed to the AI for analysis.
+
+---
+
+## Comment Behavior
+
+The pipeline **updates** its existing comment on re-runs (push to the same PR, re-trigger, etc.) instead of creating duplicate comments. This keeps the PR conversation clean.
+
+Each comment includes:
+- Pipeline duration
+- PR size classification (with warnings for large PRs)
+- All scan results in collapsible sections
+- A footer linking back to this repo
+
+---
+
+## Pipeline Stages (Full)
+
+```
+PR Opened/Updated
+       │
+       ▼
+┌─ Check Skip Label ─┐
+│  skip-ai-review?    │──yes──▶ Done (no review)
+└─────────┬───────────┘
+          │ no
+          ▼
+┌─ Load .agentic-review.yml ─┐
+└─────────┬──────────────────┘
+          ▼
+┌─ Gather Context + PR Size ─┐
+└─────────┬──────────────────┘
+          ▼
+┌─ AI Pass 1: Stack Detection ─┐
+└─────────┬────────────────────┘
+          ▼
+┌─ Setup Runtime (conditional) ─┐
+└─────────┬─────────────────────┘
+          ▼
+┌─ Execute Checks (if !skip_checks) ─┐
+└─────────┬───────────────────────────┘
+          ▼
+┌─ Docker + Trivy (if !skip_docker) ─┐
+└─────────┬───────────────────────────┘
+          ▼
+┌─ Security Scans (if !skip_security) ─┐
+└─────────┬────────────────────────────┘
+          ▼
+┌─ Dependency Audit ─┐
+└─────────┬──────────┘
+          ▼
+┌─ AI Pass 2: Code Review ─┐
+└─────────┬────────────────┘
+          ▼
+┌─ Post/Update PR Comment ─┐
+└───────────────────────────┘
+```
