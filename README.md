@@ -116,35 +116,56 @@ The entire process is **informational** — it never blocks merging. Your existi
 └──────────────┬───────────────────────────────────────────────────────┘
                ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  STAGE 5: AI Pass 2 — Code Review                                     │
+│  STAGE 5: Security & File Hygiene Scans                               │
+│                                                                      │
+│  Automated security scanning independent of the AI:                   │
+│                                                                      │
+│  1. Gitleaks — Detects hardcoded secrets, API keys, tokens           │
+│  2. Sensitive File Detection — Finds .env, .pem, .key files          │
+│  3. EOF Newline Check — Ensures all source files end with newline    │
+│  4. Large File Detection — Flags files >5MB (should use Git LFS)     │
+│  5. TODO/FIXME/HACK Detection — Finds markers in PR changes          │
+│  6. License File Check — Verifies LICENSE exists                     │
+│                                                                      │
+│  Each scan produces PASSED/FAILED with details.                       │
+│  Results are sent to AI Pass 2 for contextual analysis.               │
+└──────────────┬───────────────────────────────────────────────────────┘
+               ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  STAGE 6: AI Pass 2 — Code Review                                     │
 │                                                                      │
 │  Sends to the LLM:                                                    │
 │    • The PR diff (code changes)                                       │
 │    • The check results (what passed, what failed, output)            │
 │    • Docker build & Trivy scan results (if applicable)               │
+│    • Security scan results (gitleaks, sensitive files, etc.)         │
 │    • Config files (for context)                                       │
 │                                                                      │
-│  The AI reviews for:                                                  │
-│    1. Code quality & best practices                                   │
-│    2. Security vulnerabilities (OWASP Top 10)                         │
-│    3. Breaking changes or regressions                                 │
-│    4. Test coverage gaps                                              │
-│    5. Performance concerns                                            │
-│    6. Whether CI failures are from THIS PR or pre-existing            │
+│  The AI reviews for (in priority order):                              │
+│    1. Security — OWASP Top 10, injection, SSRF, path traversal       │
+│    2. Reliability — Null handling, race conditions, resource leaks    │
+│    3. Correctness — Logic errors, off-by-one, edge cases             │
+│    4. Performance — N+1 queries, unnecessary allocations             │
+│    5. Maintainability — Duplication, naming, complex conditionals    │
+│    6. Testing — Untested critical paths, flaky patterns              │
+│    7. Breaking changes — API contracts, schema migrations            │
 │                                                                      │
 │  Returns a structured verdict: approve / request_changes / comment    │
 └──────────────┬───────────────────────────────────────────────────────┘
                ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  STAGE 6: Post Review to PR                                           │
+│  STAGE 7: Post Review to PR                                           │
 │                                                                      │
 │  Posts a formatted comment including:                                  │
 │    • Detected stack (e.g., "Python / FastAPI / pip")                  │
 │    • Check results summary (3 passed, 1 failed)                      │
+│    • Security analysis summary                                        │
 │    • Issues found (with severity, file, line, suggestion)            │
 │    • Positives (what was done well)                                   │
 │    • Suggestions (non-blocking improvements)                         │
 │    • Full check output (collapsible)                                 │
+│    • Docker & Trivy results (collapsible)                            │
+│    • Security scan results (collapsible)                             │
 │    • Commands the AI decided to run (collapsible)                    │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -166,9 +187,15 @@ The AI does **not** use simple file-extension matching or regex patterns. It rec
 | `requirements.txt` / `requirements-dev.txt` | Python dependencies to install |
 | `go.mod` → module path + Go version | Go project → run `go vet`, `go test`, check for `golangci-lint` |
 | `Cargo.toml` | Rust project → run `cargo check`, `cargo test`, `cargo clippy` |
+| `Gemfile` + `.rubocop.yml` | Ruby project → run `rubocop`, `rake test` |
+| `mix.exs` | Elixir project → run `mix format --check-formatted`, `mix credo`, `mix test` |
+| `composer.json` | PHP project → run `phpstan`, `phpunit`, `php-cs-fixer` |
+| `*.csproj` / `*.sln` | .NET project → run `dotnet build`, `dotnet test` |
+| `*.tf` files | Terraform → run `terraform fmt -check`, `terraform validate` |
+| `Chart.yaml` | Helm chart → run `helm lint` |
 | `tsconfig.json` | TypeScript configured → type checking available |
 | `.eslintrc.*` / `eslint.config.*` | ESLint configured → linting available |
-| `Dockerfile` | Container build context (but does NOT run docker builds) |
+| `Dockerfile` | Container build context (Docker build + Trivy scan) |
 | `.npmrc` | Private registry configuration (scoped packages) |
 
 **The AI never guesses.** If your repo has no test framework configured, it won't try to run tests. If your Makefile has a `lint` target, it will use `make lint` instead of calling the linter directly.
@@ -256,8 +283,14 @@ This workflow works for **any** tech stack. The AI adapts to whatever it finds i
 | **Node.js / TypeScript** | `package.json`, `tsconfig.json` | `pnpm install`, `pnpm run lint`, `pnpm run typecheck`, `pnpm run test` |
 | **Python** | `pyproject.toml`, `requirements.txt`, `Makefile` | `pip install -r requirements.txt`, `ruff check .`, `mypy app/`, `pytest` |
 | **Go** | `go.mod` | `go mod download`, `go vet ./...`, `go test ./...`, `golangci-lint run` |
-| **Rust** | `Cargo.toml` | `cargo check`, `cargo clippy`, `cargo test` |
-| **Java / Kotlin** | `pom.xml`, `build.gradle` | `mvn verify`, `gradle check` |
+| **Rust** | `Cargo.toml` | `cargo check`, `cargo clippy -- -D warnings`, `cargo test` |
+| **Ruby** | `Gemfile`, `Rakefile`, `.rubocop.yml` | `bundle install`, `bundle exec rubocop`, `bundle exec rake test` |
+| **Elixir** | `mix.exs` | `mix deps.get`, `mix format --check-formatted`, `mix credo`, `mix test` |
+| **PHP** | `composer.json`, `phpstan.neon` | `composer install`, `vendor/bin/phpstan`, `vendor/bin/phpunit` |
+| **Java / Kotlin** | `pom.xml`, `build.gradle` | `mvn verify`, `gradle check`, `gradle test` |
+| **C# / .NET** | `*.csproj`, `*.sln` | `dotnet build`, `dotnet test` |
+| **Terraform** | `*.tf` | `terraform fmt -check`, `terraform validate`, `tflint` |
+| **Helm** | `Chart.yaml` | `helm lint` |
 | **Monorepos** | `nx.json`, `turbo.json`, `pnpm-workspace.yaml` | Monorepo-aware commands |
 
 ---
@@ -308,16 +341,59 @@ The Docker build output and Trivy findings are sent to AI Pass 2. The AI:
 
 ---
 
+## Security & File Hygiene Scans
+
+Independent of the AI, the pipeline runs **6 automated security scans** on every PR:
+
+### 1. Gitleaks — Secret Detection
+Uses [Gitleaks](https://github.com/gitleaks/gitleaks) to scan the entire codebase for hardcoded secrets:
+- API keys, tokens, passwords
+- AWS credentials, Azure keys
+- Private keys, certificates
+- Generic high-entropy strings
+
+If secrets are found, they are **redacted** in the output (safe for PR comments).
+
+### 2. Sensitive File Detection
+Scans for files that should never be committed to Git:
+- `.env`, `.env.local`, `.env.production`
+- `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`
+- `id_rsa`, `id_ed25519`
+- `credentials.json`, `service-account*.json`
+- `secrets.yml`, `.htpasswd`
+
+### 3. End-of-File (EOF) Newline Check
+Verifies that all source files end with a newline (POSIX standard). Checks:
+- All major source extensions (`.ts`, `.py`, `.go`, `.rs`, `.rb`, `.java`, `.kt`, etc.)
+- Config files (`.yml`, `.json`, `.toml`)
+- Infrastructure files (`.tf`, `.sh`, `Dockerfile`, `Makefile`)
+
+### 4. Large File Detection (>5MB)
+Flags files larger than 5MB that may have been accidentally committed. These should typically use Git LFS.
+
+### 5. TODO/FIXME/HACK Detection
+Scans the PR diff for code markers (`TODO`, `FIXME`, `HACK`, `XXX`, `WORKAROUND`) in new/changed lines. These are informational — they highlight areas the author may want to address before merging.
+
+### 6. License File Check
+Verifies that a LICENSE file exists in the repository root. Important for open-source compliance.
+
+### Scan Results in the PR Comment
+
+All security scan results appear in a collapsible **"Security & File Hygiene Scans"** section of the PR comment, with clear PASSED/FAILED status for each scan. Critical findings (leaked secrets, sensitive files) are also flagged by the AI reviewer as high-severity issues.
+
+---
+
 ## Design Principles
 
 | Principle | Implementation |
 |-----------|----------------|
 | **Zero config per repo** | Add the 5-line caller workflow and secrets — done |
 | **AI-driven, not rule-driven** | No `if language == "python"` logic anywhere. The LLM reasons about your repo. |
+| **Defense in depth** | Multiple security layers: Gitleaks + Trivy + Sensitive File Detection + AI review |
 | **Centralized updates** | Fix a bug or improve prompts here → all repos benefit immediately |
 | **Informational only** | Never blocks merging. Separate CI handles gating. |
 | **Graceful degradation** | If AI fails, secrets are missing, or checks error — the workflow still completes without breaking |
-| **Stack agnostic** | Works for Node.js, Python, Go, Rust, Java, or anything else |
+| **Stack agnostic** | Works for Node.js, Python, Go, Rust, Ruby, Elixir, Java, PHP, .NET — anything |
 | **Secure** | Secrets are passed via `workflow_call` secrets — never logged or exposed |
 
 ---

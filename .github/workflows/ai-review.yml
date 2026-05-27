@@ -47,9 +47,11 @@ jobs:
       - name: Gather repository context
         id: context
         run: |
-          echo "======================================================="
-          echo "Scanning repository structure..."
-          echo "======================================================="
+          echo ""
+          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+          echo "┃          STAGE 1: Repository Context Gathering        ┃"
+          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+          echo ""
           find . -type f \
             -not -path './.git/*' \
             -not -path './node_modules/*' \
@@ -77,14 +79,18 @@ jobs:
           for f in $(find . -maxdepth 3 \( \
             -name "package.json" -o -name "tsconfig.json" -o -name "pnpm-workspace.yaml" \
             -o -name "pyproject.toml" -o -name "requirements*.txt" -o -name "setup.py" \
-            -o -name "go.mod" -o -name "Cargo.toml" \
+            -o -name "go.mod" -o -name "Cargo.toml" -o -name "Cargo.lock" \
             -o -name "pom.xml" -o -name "build.gradle" -o -name "build.gradle.kts" \
+            -o -name "Gemfile" -o -name "Rakefile" -o -name ".rubocop.yml" \
+            -o -name "mix.exs" -o -name "composer.json" -o -name "phpstan.neon" \
+            -o -name "*.csproj" -o -name "*.sln" \
             -o -name "Makefile" -o -name "Dockerfile" \
             -o -name "eslint.config*" -o -name ".eslintrc*" \
             -o -name "vitest.config*" -o -name "jest.config*" -o -name "pytest.ini" \
             -o -name "nx.json" -o -name "turbo.json" \
             -o -name ".npmrc" -o -name ".yarnrc.yml" \
-            \) -not -path './.git/*' -not -path './node_modules/*' -not -path './vendor/*' 2>/dev/null | sort | head -20); do
+            -o -name "*.tf" -o -name "Chart.yaml" \
+            \) -not -path './.git/*' -not -path './node_modules/*' -not -path './vendor/*' 2>/dev/null | sort | head -25); do
             if [[ -f "$f" ]] && [[ $(wc -c < "$f") -lt 50000 ]]; then
               CONFIG_CONTENT+=$'\n=== FILE: '"$f"$' ===\n'
               CONFIG_CONTENT+="$(cat "$f")"$'\n'
@@ -93,7 +99,7 @@ jobs:
           done
           echo "$CONFIG_CONTENT" > /tmp/config-files.txt
           echo "  Config files found: ${CONFIG_COUNT}"
-          echo "======================================================="
+          echo ""
 
       - name: "AI Pass 1: Detect stack & generate commands"
         id: pass1
@@ -103,9 +109,11 @@ jobs:
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
         run: |
           set +e
-          echo "======================================================="
-          echo "AI Pass 1: Analyzing repository to determine stack..."
-          echo "======================================================="
+          echo ""
+          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+          echo "┃          STAGE 2: AI Stack Detection                  ┃"
+          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+          echo ""
 
           # Validate secrets are available
           if [[ -z "$AI_API_ENDPOINT" || -z "$AI_API_KEY" ]]; then
@@ -118,7 +126,31 @@ jobs:
             exit 0
           fi
 
-          SYSTEM_PROMPT='You are a senior DevOps engineer analyzing a repository to determine its tech stack and what CI commands to run. RULES: 1) ONLY derive commands from what you see in the repository (package.json scripts, Makefile targets, pyproject.toml tools, requirements.txt, go.mod, Cargo.toml). 2) DO NOT invent commands the repo does not support. 3) For setup_commands include dependency installation (pip install, npm install, go mod download, etc). 4) For check_commands include linting, type checking, unit tests with coverage, code formatting, build verification. 5) Do NOT include e2e tests, deployment commands, or docker builds. 6) If package.json has packageManager field, note the exact version. 7) Read .npmrc to understand registry configuration. 8) For Python: look for ruff, mypy, pytest, black, flake8, isort in pyproject.toml or requirements. 9) For Go: look for golangci-lint, go test, go vet. Return ONLY valid JSON (no markdown fences): {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":null,"python_version":null,"go_version":null}}'
+          SYSTEM_PROMPT='You are a senior DevOps engineer analyzing a repository to determine its tech stack and what CI commands to run.
+
+          SUPPORTED STACKS: Node.js, TypeScript, Python, Go, Rust, Java, Kotlin, Ruby, Elixir, PHP, C#/.NET, Scala, Swift, Terraform, Helm.
+
+          RULES:
+          1) ONLY derive commands from what you see in the repository config files.
+          2) DO NOT invent commands the repo does not support.
+          3) For setup_commands: include dependency installation.
+          4) For check_commands: include linting, type checking, formatting, unit tests, build verification.
+          5) Do NOT include e2e tests, deployment commands, or docker builds.
+          6) Stack-specific guidance:
+             - Node/TS: read package.json scripts, packageManager field, .npmrc
+             - Python: read pyproject.toml [tool.*], Makefile targets, requirements*.txt
+             - Go: read go.mod, look for golangci-lint
+             - Rust: read Cargo.toml, use cargo check/clippy/test
+             - Ruby: read Gemfile, Rakefile, .rubocop.yml → bundle exec rake, rubocop
+             - Elixir: read mix.exs → mix format --check-formatted, mix credo, mix test
+             - PHP: read composer.json → phpstan, phpunit, php-cs-fixer
+             - Java/Kotlin: read pom.xml or build.gradle → mvn verify or gradle check
+             - C#/.NET: read *.csproj, *.sln → dotnet build, dotnet test
+             - Terraform: read *.tf → terraform fmt -check, terraform validate, tflint
+             - Helm: read Chart.yaml → helm lint
+
+          Return ONLY valid JSON (no markdown fences):
+          {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":null,"python_version":null,"go_version":null,"ruby_version":null}}'
 
           FILE_TREE=$(cat /tmp/file-tree.txt)
           CONFIG_FILES=$(cat /tmp/config-files.txt)
@@ -167,15 +199,16 @@ jobs:
           fi
 
           echo ""
-          echo "--- DETECTED STACK ---"
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  DETECTED STACK                                      │"
+          echo "└─────────────────────────────────────────────────────┘"
           jq '.stack' /tmp/ai-commands.json 2>/dev/null || true
           echo ""
-          echo "--- COMMANDS TO EXECUTE ---"
-          echo "  Setup:"
+          echo "  Setup commands:"
           jq -r '.setup_commands[]? | "    > \(.cmd) -- \(.purpose)"' /tmp/ai-commands.json 2>/dev/null || echo "    (none)"
-          echo "  Checks:"
+          echo "  Check commands:"
           jq -r '.check_commands[]? | "    > \(.cmd) -- \(.purpose) [\(.confidence)]"' /tmp/ai-commands.json 2>/dev/null || echo "    (none)"
-          echo "======================================================="
+          echo ""
 
           NODE_VER=$(jq -r '.runtime_requirements.node_version // empty' /tmp/ai-commands.json 2>/dev/null)
           PYTHON_VER=$(jq -r '.runtime_requirements.python_version // empty' /tmp/ai-commands.json 2>/dev/null)
@@ -259,9 +292,11 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          echo "======================================================="
-          echo "EXECUTING CHECKS"
-          echo "======================================================="
+          echo ""
+          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+          echo "┃          STAGE 3: Running Code Quality Checks         ┃"
+          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+          echo ""
 
           # Ensure ai-commands.json exists
           if [[ ! -f /tmp/ai-commands.json ]]; then
@@ -331,12 +366,12 @@ jobs:
           done
 
           echo ""
-          echo "======================================================="
-          echo "CHECK RESULTS: ${PASSED_COUNT} passed, ${FAILED_COUNT} failed"
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  CHECKS COMPLETE: ${PASSED_COUNT} passed, ${FAILED_COUNT} failed        │"
+          echo "└─────────────────────────────────────────────────────┘"
           if [[ "$SETUP_FAILED" == "true" ]]; then
-            echo "WARNING: Some checks may have failed due to dependency installation failure"
+            echo "⚠ WARNING: Some checks may have failed due to dependency installation failure"
           fi
-          echo "======================================================="
 
           {
             echo "**Summary:** ${PASSED_COUNT} passed, ${FAILED_COUNT} failed"
@@ -359,9 +394,11 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          echo "======================================================="
-          echo "DOCKER BUILD & SECURITY SCAN"
-          echo "======================================================="
+          echo ""
+          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+          echo "┃          STAGE 4: Docker Build & Trivy Scan           ┃"
+          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+          echo ""
 
           # Auto-detect Dockerfiles in the repo
           DOCKERFILES=$(find . -maxdepth 3 \( -name "Dockerfile" -o -name "Dockerfile.*" -o -name "*.Dockerfile" \) \
@@ -448,12 +485,258 @@ jobs:
           done <<< "$DOCKERFILES"
 
           echo ""
-          echo "======================================================="
-          echo "DOCKER RESULTS: build exit=$DOCKER_EXIT"
-          echo "======================================================="
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  DOCKER RESULTS: build exit=$DOCKER_EXIT             │"
+          echo "└─────────────────────────────────────────────────────┘"
 
           echo "$DOCKER_RESULTS" > /tmp/docker-results.txt
           echo "docker_exit=$DOCKER_EXIT" >> "$GITHUB_OUTPUT"
+
+      - name: "Security Scans (Gitleaks, File Hygiene, Sensitive Data)"
+        id: security
+        continue-on-error: true
+        run: |
+          set +e
+
+          echo ""
+          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+          echo "┃          SECURITY & FILE HYGIENE SCANS                ┃"
+          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+          echo ""
+
+          SECURITY_RESULTS=""
+          SECURITY_EXIT=0
+
+          # ─────────────────────────────────────────────────────────
+          # SCAN 1: Gitleaks — Detect hardcoded secrets in code
+          # ─────────────────────────────────────────────────────────
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  SCAN 1: Gitleaks — Secret Detection                 │"
+          echo "└─────────────────────────────────────────────────────┘"
+
+          # Install gitleaks
+          GITLEAKS_VERSION="8.18.4"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks 2>/dev/null || {
+            echo "  ⚠ Failed to install gitleaks — skipping"
+            SECURITY_RESULTS+="### Gitleaks (Secret Detection) -- SKIPPED (install failed)"$'\n\n'
+            GITLEAKS_INSTALLED=false
+          }
+          GITLEAKS_INSTALLED=${GITLEAKS_INSTALLED:-true}
+
+          if [[ "$GITLEAKS_INSTALLED" == "true" ]]; then
+            echo "  Scanning for hardcoded secrets, API keys, tokens..."
+            GITLEAKS_OUTPUT=$(gitleaks detect --source . --no-git --no-banner --redact 2>&1)
+            GITLEAKS_EXIT=$?
+
+            if [[ $GITLEAKS_EXIT -ne 0 ]]; then
+              SECURITY_EXIT=1
+              echo "  ❌ SECRETS DETECTED — Review required!"
+              echo "$GITLEAKS_OUTPUT"
+              SECURITY_RESULTS+="### Gitleaks (Secret Detection) -- ❌ SECRETS FOUND"$'\n'
+              SECURITY_RESULTS+='```'$'\n'
+              SECURITY_RESULTS+="${GITLEAKS_OUTPUT:0:3000}"$'\n'
+              SECURITY_RESULTS+='```'$'\n\n'
+            else
+              echo "  ✅ No hardcoded secrets found"
+              SECURITY_RESULTS+="### Gitleaks (Secret Detection) -- ✅ PASSED"$'\n\n'
+            fi
+          fi
+
+          echo ""
+
+          # ─────────────────────────────────────────────────────────
+          # SCAN 2: Sensitive File Detection
+          # ─────────────────────────────────────────────────────────
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  SCAN 2: Sensitive File Detection                     │"
+          echo "└─────────────────────────────────────────────────────┘"
+
+          echo "  Checking for sensitive files that should not be committed..."
+          SENSITIVE_FILES=""
+          SENSITIVE_PATTERNS=(
+            ".env"
+            ".env.local"
+            ".env.production"
+            "*.pem"
+            "*.key"
+            "*.p12"
+            "*.pfx"
+            "*.jks"
+            "id_rsa"
+            "id_ed25519"
+            "*.keystore"
+            "credentials.json"
+            "service-account*.json"
+            "secrets.yml"
+            "secrets.yaml"
+            ".htpasswd"
+            "shadow"
+          )
+
+          for pattern in "${SENSITIVE_PATTERNS[@]}"; do
+            FOUND=$(find . -name "$pattern" \
+              -not -path './.git/*' \
+              -not -path './node_modules/*' \
+              -not -path './.venv/*' \
+              -not -path './vendor/*' \
+              2>/dev/null)
+            if [[ -n "$FOUND" ]]; then
+              SENSITIVE_FILES+="$FOUND"$'\n'
+            fi
+          done
+
+          if [[ -n "$SENSITIVE_FILES" ]]; then
+            SECURITY_EXIT=1
+            echo "  ❌ Sensitive files found:"
+            echo "$SENSITIVE_FILES" | sed 's/^/    /'
+            SECURITY_RESULTS+="### Sensitive File Detection -- ❌ FOUND"$'\n'
+            SECURITY_RESULTS+='```'$'\n'
+            SECURITY_RESULTS+="$SENSITIVE_FILES"$'\n'
+            SECURITY_RESULTS+='```'$'\n'
+            SECURITY_RESULTS+="These files may contain secrets and should be in .gitignore."$'\n\n'
+          else
+            echo "  ✅ No sensitive files found"
+            SECURITY_RESULTS+="### Sensitive File Detection -- ✅ PASSED"$'\n\n'
+          fi
+
+          echo ""
+
+          # ─────────────────────────────────────────────────────────
+          # SCAN 3: End-of-File Newline Check
+          # ─────────────────────────────────────────────────────────
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  SCAN 3: End-of-File (EOF) Newline Check             │"
+          echo "└─────────────────────────────────────────────────────┘"
+
+          echo "  Checking source files for missing trailing newline..."
+          EOF_ISSUES=""
+          EOF_COUNT=0
+
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            # Only check text/source files, skip binaries
+            if file "$file" 2>/dev/null | grep -q "text"; then
+              if [[ -s "$file" ]] && [[ $(tail -c 1 "$file" | wc -l) -eq 0 ]]; then
+                EOF_ISSUES+="  $file"$'\n'
+                EOF_COUNT=$((EOF_COUNT + 1))
+              fi
+            fi
+          done < <(find . -type f \
+            \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" \
+            -o -name "*.py" -o -name "*.go" -o -name "*.rs" -o -name "*.rb" \
+            -o -name "*.java" -o -name "*.kt" -o -name "*.scala" \
+            -o -name "*.ex" -o -name "*.exs" -o -name "*.php" \
+            -o -name "*.css" -o -name "*.scss" -o -name "*.html" \
+            -o -name "*.yml" -o -name "*.yaml" -o -name "*.json" \
+            -o -name "*.toml" -o -name "*.cfg" -o -name "*.ini" \
+            -o -name "*.md" -o -name "*.tf" -o -name "*.sh" \
+            -o -name "Dockerfile" -o -name "Makefile" \) \
+            -not -path './.git/*' \
+            -not -path './node_modules/*' \
+            -not -path './dist/*' \
+            -not -path './.venv/*' \
+            -not -path './vendor/*' \
+            -not -path './build/*' \
+            2>/dev/null | head -200)
+
+          if [[ $EOF_COUNT -gt 0 ]]; then
+            echo "  ⚠ ${EOF_COUNT} files missing trailing newline:"
+            echo "$EOF_ISSUES" | head -20
+            [[ $EOF_COUNT -gt 20 ]] && echo "  ... and $((EOF_COUNT - 20)) more"
+            SECURITY_RESULTS+="### EOF Newline Check -- ⚠ ${EOF_COUNT} files missing newline"$'\n'
+            SECURITY_RESULTS+='```'$'\n'
+            SECURITY_RESULTS+="${EOF_ISSUES:0:2000}"$'\n'
+            SECURITY_RESULTS+='```'$'\n\n'
+          else
+            echo "  ✅ All source files have proper trailing newline"
+            SECURITY_RESULTS+="### EOF Newline Check -- ✅ PASSED"$'\n\n'
+          fi
+
+          echo ""
+
+          # ─────────────────────────────────────────────────────────
+          # SCAN 4: Large File Detection
+          # ─────────────────────────────────────────────────────────
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  SCAN 4: Large File Detection (>5MB)                 │"
+          echo "└─────────────────────────────────────────────────────┘"
+
+          echo "  Scanning for files larger than 5MB..."
+          LARGE_FILES=$(find . -type f -size +5M \
+            -not -path './.git/*' \
+            -not -path './node_modules/*' \
+            -not -path './.venv/*' \
+            -not -path './vendor/*' \
+            2>/dev/null | while read -r f; do
+              SIZE=$(du -h "$f" 2>/dev/null | cut -f1)
+              echo "  ${SIZE}  ${f}"
+            done)
+
+          if [[ -n "$LARGE_FILES" ]]; then
+            echo "  ⚠ Large files found:"
+            echo "$LARGE_FILES"
+            SECURITY_RESULTS+="### Large File Detection (>5MB) -- ⚠ FOUND"$'\n'
+            SECURITY_RESULTS+='```'$'\n'
+            SECURITY_RESULTS+="$LARGE_FILES"$'\n'
+            SECURITY_RESULTS+='```'$'\n'
+            SECURITY_RESULTS+="Consider using Git LFS for large files."$'\n\n'
+          else
+            echo "  ✅ No files exceeding 5MB"
+            SECURITY_RESULTS+="### Large File Detection (>5MB) -- ✅ PASSED"$'\n\n'
+          fi
+
+          echo ""
+
+          # ─────────────────────────────────────────────────────────
+          # SCAN 5: TODO/FIXME/HACK Detection in Changed Files
+          # ─────────────────────────────────────────────────────────
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  SCAN 5: TODO/FIXME/HACK in PR Changes               │"
+          echo "└─────────────────────────────────────────────────────┘"
+
+          echo "  Checking PR diff for TODO/FIXME/HACK markers..."
+          MARKERS=$(grep -n "TODO\|FIXME\|HACK\|XXX\|WORKAROUND" /tmp/pr-diff.txt 2>/dev/null | grep "^+" | head -20)
+
+          if [[ -n "$MARKERS" ]]; then
+            MARKER_COUNT=$(echo "$MARKERS" | wc -l)
+            echo "  ⚠ Found ${MARKER_COUNT} TODO/FIXME markers in changes:"
+            echo "$MARKERS" | sed 's/^/    /'
+            SECURITY_RESULTS+="### TODO/FIXME/HACK Detection -- ⚠ ${MARKER_COUNT} markers found"$'\n'
+            SECURITY_RESULTS+='```'$'\n'
+            SECURITY_RESULTS+="${MARKERS:0:2000}"$'\n'
+            SECURITY_RESULTS+='```'$'\n\n'
+          else
+            echo "  ✅ No TODO/FIXME/HACK markers in changes"
+            SECURITY_RESULTS+="### TODO/FIXME/HACK Detection -- ✅ CLEAN"$'\n\n'
+          fi
+
+          echo ""
+
+          # ─────────────────────────────────────────────────────────
+          # SCAN 6: License File Check
+          # ─────────────────────────────────────────────────────────
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  SCAN 6: License File Check                          │"
+          echo "└─────────────────────────────────────────────────────┘"
+
+          LICENSE_FILE=$(find . -maxdepth 1 \( -iname "LICENSE" -o -iname "LICENSE.*" -o -iname "LICENCE" -o -iname "COPYING" \) 2>/dev/null | head -1)
+          if [[ -n "$LICENSE_FILE" ]]; then
+            echo "  ✅ License file found: ${LICENSE_FILE}"
+            SECURITY_RESULTS+="### License File -- ✅ Present (${LICENSE_FILE})"$'\n\n'
+          else
+            echo "  ⚠ No license file found in repo root"
+            SECURITY_RESULTS+="### License File -- ⚠ Missing"$'\n'
+            SECURITY_RESULTS+="Consider adding a LICENSE file to the repository root."$'\n\n'
+          fi
+
+          echo ""
+          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+          echo "┃          SECURITY SCANS COMPLETE                      ┃"
+          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+
+          echo "$SECURITY_RESULTS" > /tmp/security-results.txt
+          echo "security_exit=$SECURITY_EXIT" >> "$GITHUB_OUTPUT"
 
       - name: "AI Pass 2: Review code and results"
         id: pass2
@@ -463,9 +746,11 @@ jobs:
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
         run: |
           set +e
-          echo "======================================================="
-          echo "AI Pass 2: Reviewing code changes and check results..."
-          echo "======================================================="
+          echo ""
+          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+          echo "┃          STAGE 6: AI Code Review                      ┃"
+          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+          echo ""
 
           # Validate secrets
           if [[ -z "$AI_API_ENDPOINT" || -z "$AI_API_KEY" ]]; then
@@ -474,12 +759,34 @@ jobs:
             exit 0
           fi
 
-          SYSTEM_PROMPT='You are a senior staff engineer reviewing a pull request. You have the PR diff and CI check results. Review for: 1) Code quality and best practices, 2) Security vulnerabilities (OWASP Top 10, hardcoded secrets, injection), 3) Breaking changes, 4) Test coverage gaps, 5) Performance concerns. Distinguish between failures caused by this PR vs pre-existing issues. If dependency install failed, note that check failures may not reflect actual code issues. Return ONLY valid JSON (no markdown fences): {"summary":"1-2 sentence summary","verdict":"approve|request_changes|comment","confidence":0.85,"check_results_analysis":"what CI results mean","issues":[{"severity":"critical|high|medium|low|info","file":"path","line":0,"title":"...","description":"...","suggestion":"..."}],"positives":["things done well"],"suggestions":["non-blocking improvements"]}'
+          SYSTEM_PROMPT='You are a principal software engineer conducting a thorough pull request review. You have the PR diff, CI results, Docker/Trivy scan results, and security scan results.
+
+          REVIEW DIMENSIONS (in order of priority):
+          1. SECURITY: OWASP Top 10, hardcoded secrets, SQL/command injection, XSS, SSRF, insecure deserialization, path traversal, missing auth checks
+          2. RELIABILITY: Null/undefined handling, error handling, race conditions, resource leaks, infinite loops
+          3. CORRECTNESS: Logic errors, off-by-one, wrong comparisons, missing edge cases
+          4. PERFORMANCE: N+1 queries, unnecessary re-renders, missing indexes, large allocations in loops
+          5. MAINTAINABILITY: Code duplication, unclear naming, missing types, complex conditionals
+          6. TESTING: Untested critical paths, missing edge case tests, flaky test patterns
+          7. BREAKING CHANGES: API contract changes, schema migrations, env var changes
+
+          GUIDELINES:
+          - Be specific: reference exact file paths and line numbers from the diff
+          - Distinguish between: a) new issues introduced by this PR, b) pre-existing issues touched by this PR
+          - If dependency install failed, note that check failures may not reflect actual code issues
+          - If Trivy found vulnerabilities, flag them as security issues with severity
+          - If gitleaks found secrets, flag as CRITICAL security issues
+          - Provide actionable fix suggestions, not just descriptions
+          - Be constructive: acknowledge good patterns and improvements
+
+          Return ONLY valid JSON (no markdown fences):
+          {"summary":"2-3 sentence summary of PR quality and risk","verdict":"approve|request_changes|comment","confidence":0.85,"check_results_analysis":"what CI results mean for this PR","security_analysis":"summary of security scan findings","issues":[{"severity":"critical|high|medium|low|info","file":"path","line":0,"title":"...","description":"...","suggestion":"fix code snippet or approach"}],"positives":["things done well"],"suggestions":["non-blocking improvements"]}'
 
           PR_DIFF=$(cat /tmp/pr-diff.txt 2>/dev/null || echo "")
           CHECK_RESULTS=$(cat /tmp/check-results.txt 2>/dev/null || echo "No checks were run")
           CONFIG_FILES=$(cat /tmp/config-files.txt 2>/dev/null || echo "")
           DOCKER_RESULTS=$(cat /tmp/docker-results.txt 2>/dev/null || echo "")
+          SECURITY_RESULTS=$(cat /tmp/security-results.txt 2>/dev/null || echo "No security scans were run")
 
           USER_MSG="## Pull Request: ${{ github.event.pull_request.title }}
           Author: ${{ github.event.pull_request.user.login }}
@@ -498,7 +805,10 @@ jobs:
           ## Docker Build & Trivy Scan Results
           ${DOCKER_RESULTS:0:5000}
 
-          Review this PR thoroughly. If there are Trivy vulnerabilities, highlight them as security issues."
+          ## Security Scan Results (Gitleaks, Sensitive Files, EOF, Large Files)
+          ${SECURITY_RESULTS:0:5000}
+
+          Review this PR thoroughly. Pay special attention to any security findings from gitleaks or Trivy."
 
           RESPONSE=$(curl -sS -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
@@ -538,11 +848,12 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let review = '{}', checks = 'No results', commands = {}, dockerResults = '';
+            let review = '{}', checks = 'No results', commands = {}, dockerResults = '', securityResults = '';
             try { review = fs.readFileSync('/tmp/ai-review.txt', 'utf8'); } catch(e) {}
             try { checks = fs.readFileSync('/tmp/check-results.txt', 'utf8'); } catch(e) {}
             try { commands = JSON.parse(fs.readFileSync('/tmp/ai-commands.json', 'utf8')); } catch(e) {}
             try { dockerResults = fs.readFileSync('/tmp/docker-results.txt', 'utf8').trim(); } catch(e) {}
+            try { securityResults = fs.readFileSync('/tmp/security-results.txt', 'utf8').trim(); } catch(e) {}
 
             const passed = '${{ steps.checks.outputs.passed }}' || '0';
             const failed = '${{ steps.checks.outputs.failed }}' || '0';
@@ -550,6 +861,7 @@ jobs:
             const setupFailed = '${{ steps.checks.outputs.setup_failed }}' === 'true';
             const dockerFound = '${{ steps.docker.outputs.docker_found }}' === 'true';
             const dockerExit = '${{ steps.docker.outputs.docker_exit }}' || '0';
+            const securityExit = '${{ steps.security.outputs.security_exit }}' || '0';
 
             let reviewData = {};
             try {
@@ -589,6 +901,7 @@ jobs:
               `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${Math.round((reviewData.confidence || 0) * 100)}% |`,
               '',
               reviewData.check_results_analysis ? `### CI Analysis\n${reviewData.check_results_analysis}\n` : '',
+              reviewData.security_analysis ? `### Security Analysis\n${reviewData.security_analysis}\n` : '',
               issuesList ? `### Issues Found\n\n${issuesList}\n` : '',
               positives ? `### What is Good\n\n${positives}\n` : '',
               suggestions ? `### Suggestions\n\n${suggestions}\n` : '',
@@ -608,6 +921,7 @@ jobs:
               '</details>',
               '',
               dockerFound ? '<details><summary>Docker Build & Trivy Scan</summary>\n\n' + dockerResults + '\n\n</details>\n' : '',
+              securityResults ? '<details><summary>Security & File Hygiene Scans</summary>\n\n' + securityResults + '\n\n</details>\n' : '',
               '',
               '---',
               '<sub>Powered by <a href="https://github.com/bayer-int/agentic-review">agentic-review</a> | Informational only - does not block merging</sub>',
@@ -650,8 +964,13 @@ jobs:
       - name: Done
         if: always()
         run: |
-          echo "======================================================="
-          echo "AI REVIEW PIPELINE COMPLETE"
+          echo ""
+          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+          echo "┃          AI REVIEW PIPELINE COMPLETE                   ┃"
+          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+          echo ""
           echo "  Checks: ${{ steps.checks.outputs.passed }} passed, ${{ steps.checks.outputs.failed }} failed"
+          echo "  Security: exit=${{ steps.security.outputs.security_exit }}"
+          echo "  Docker: found=${{ steps.docker.outputs.docker_found }}, exit=${{ steps.docker.outputs.docker_exit }}"
           echo "  Review posted to PR #${{ github.event.pull_request.number }}"
-          echo "======================================================="
+          echo ""
