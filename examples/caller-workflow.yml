@@ -1,6 +1,14 @@
 # ────────────────────────────────────────────────────────────────────────────────
 # AI PR Review — Drop this file into ANY repo's .github/workflows/
 # That's it. No other configuration needed. AI detects your stack automatically.
+#
+# Required secrets (set at org or repo level):
+#   - AI_API_KEY: MGA/OpenAI API key
+#   - AI_API_ENDPOINT: LLM endpoint URL
+#
+# Optional secrets (for Bayer private npm packages):
+#   - ARTIFACTORY_USERNAME: Bayer Artifactory username
+#   - ARTIFACTORY_AUTH_TOKEN: Bayer Artifactory auth token
 # ────────────────────────────────────────────────────────────────────────────────
 name: AI PR Review
 
@@ -14,3 +22,6 @@ jobs:
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+      ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY }}
+      ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+      ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}

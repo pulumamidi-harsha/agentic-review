@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       review_type:
-        description: 'Type of review: full, security'
+        description: 'Type of review: full, security, quick'
         required: false
         type: string
         default: 'full'
@@ -16,8 +16,14 @@ on:
         description: 'LLM API endpoint URL'
         required: true
       ORG_PAT:
-        description: 'Org-level PAT with repo read access (for checking out agentic-review prompts)'
+        description: 'Org-level PAT with repo read access'
         required: true
+      ARTIFACTORY_USERNAME:
+        description: 'Bayer Artifactory username (for private npm packages)'
+        required: false
+      ARTIFACTORY_AUTH_TOKEN:
+        description: 'Bayer Artifactory auth token (for private npm packages)'
+        required: false
 
 permissions:
   contents: read
@@ -28,32 +34,25 @@ jobs:
     name: AI Code Review
     runs-on: ubuntu-latest
     timeout-minutes: 25
-
     concurrency:
       group: ai-review-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
 
     steps:
-      - name: Checkout target repo
+      - name: Checkout caller repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Checkout AI prompts
-        uses: actions/checkout@v4
-        with:
-          repository: bayer-int/agentic-review
-          ref: main
-          path: .ai-prompts
-          token: ${{ secrets.ORG_PAT }}
-
       - name: Gather repository context
         id: context
         run: |
+          echo "======================================================="
+          echo "Scanning repository structure..."
+          echo "======================================================="
           find . -type f \
             -not -path './.git/*' \
             -not -path './node_modules/*' \
-            -not -path './.ai-prompts/*' \
             -not -path './dist/*' \
             -not -path './build/*' \
             -not -path './.next/*' \
@@ -63,12 +62,18 @@ jobs:
             -not -path './target/*' \
             -not -path './.gradle/*' \
             | sort | head -500 > /tmp/file-tree.txt
+          FILE_COUNT=$(wc -l < /tmp/file-tree.txt)
+          echo "  Found ${FILE_COUNT} files in repository"
 
           git diff origin/${{ github.base_ref }}...HEAD -- . \
             ':!package-lock.json' ':!yarn.lock' ':!pnpm-lock.yaml' ':!*.lock' ':!go.sum' ':!Cargo.lock' \
-            | head -15000 > /tmp/pr-diff.txt
+            > /tmp/pr-diff.txt 2>/dev/null || true
+          DIFF_LINES=$(wc -l < /tmp/pr-diff.txt)
+          CHANGED_FILES=$(grep -c "^diff --git" /tmp/pr-diff.txt 2>/dev/null || echo "0")
+          echo "  PR diff: ${DIFF_LINES} lines across ${CHANGED_FILES} files"
 
           CONFIG_CONTENT=""
+          CONFIG_COUNT=0
           for f in $(find . -maxdepth 3 \( \
             -name "package.json" -o -name "tsconfig.json" -o -name "pnpm-workspace.yaml" \
             -o -name "pyproject.toml" -o -name "requirements*.txt" -o -name "setup.py" \
@@ -78,16 +83,17 @@ jobs:
             -o -name "eslint.config*" -o -name ".eslintrc*" \
             -o -name "vitest.config*" -o -name "jest.config*" -o -name "pytest.ini" \
             -o -name "nx.json" -o -name "turbo.json" \
-            \) -not -path './.git/*' -not -path './node_modules/*' -not -path './.ai-prompts/*' -not -path './vendor/*' 2>/dev/null | head -15); do
+            -o -name ".npmrc" -o -name ".yarnrc.yml" \
+            \) -not -path './.git/*' -not -path './node_modules/*' -not -path './vendor/*' 2>/dev/null | sort | head -20); do
             if [[ -f "$f" ]] && [[ $(wc -c < "$f") -lt 50000 ]]; then
-              CONFIG_CONTENT+="
-=== FILE: $f ===
-$(cat "$f")
-
-"
+              CONFIG_CONTENT+=$'\n=== FILE: '"$f"$' ===\n'
+              CONFIG_CONTENT+="$(cat "$f")"$'\n'
+              CONFIG_COUNT=$((CONFIG_COUNT + 1))
             fi
           done
           echo "$CONFIG_CONTENT" > /tmp/config-files.txt
+          echo "  Config files found: ${CONFIG_COUNT}"
+          echo "======================================================="
 
       - name: "AI Pass 1: Detect stack & generate commands"
         id: pass1
@@ -95,20 +101,22 @@ $(cat "$f")
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
         run: |
-          if [[ -f .ai-prompts/prompts/detect-and-command.md ]]; then
-            SYSTEM_PROMPT=$(cat .ai-prompts/prompts/detect-and-command.md)
-          else
-            SYSTEM_PROMPT='You are a senior DevOps engineer. Determine the stack and commands to run. Return ONLY valid JSON: {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":"20","python_version":null,"go_version":null}}'
-          fi
+          echo "======================================================="
+          echo "AI Pass 1: Analyzing repository to determine stack..."
+          echo "======================================================="
+
+          SYSTEM_PROMPT='You are a senior DevOps engineer analyzing a repository to determine its tech stack and what CI commands to run. RULES: 1) ONLY derive commands from what you see in the repository (package.json scripts, Makefile targets, pyproject.toml tools). 2) DO NOT invent commands the repo does not support. 3) For setup_commands include dependency installation. 4) For check_commands include linting, type checking, unit tests with coverage, code formatting, style linting, build verification. 5) Also add universal checks: secret scanning (grep for hardcoded secrets), .env file detection, large file detection. 6) Do NOT include e2e tests, deployment commands, or docker builds. 7) If package.json has packageManager field, note the exact version. 8) Read .npmrc to understand registry configuration. Return ONLY valid JSON (no markdown fences): {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":"20","python_version":null,"go_version":null}}'
 
           FILE_TREE=$(cat /tmp/file-tree.txt)
           CONFIG_FILES=$(cat /tmp/config-files.txt)
 
-          USER_MSG="## File Tree
-${FILE_TREE:0:6000}
+          USER_MSG="## Repository File Tree
+          ${FILE_TREE:0:6000}
 
-## Config Files
-${CONFIG_FILES:0:40000}"
+          ## Configuration Files
+          ${CONFIG_FILES:0:40000}
+
+          Analyze this repository. Determine the stack and generate commands to validate code quality, run tests with coverage, check formatting, scan for secrets, and verify the build."
 
           RESPONSE=$(curl -s -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
@@ -130,15 +138,23 @@ ${CONFIG_FILES:0:40000}"
           AI_OUTPUT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
 
           if [[ -z "$AI_OUTPUT" ]]; then
-            echo "::warning::AI Pass 1 returned empty"
+            echo "::error::AI Pass 1 returned empty response"
             echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"runtime_requirements":{}}' > /tmp/ai-commands.json
           else
             CLEANED=$(echo "$AI_OUTPUT" | sed 's/^```json//;s/^```//')
             echo "$CLEANED" | jq '.' > /tmp/ai-commands.json 2>/dev/null || echo "$CLEANED" > /tmp/ai-commands.json
           fi
 
-          echo "=== Stack ===" && jq '.stack' /tmp/ai-commands.json 2>/dev/null || true
-          echo "=== Commands ===" && jq '.check_commands' /tmp/ai-commands.json 2>/dev/null || true
+          echo ""
+          echo "--- DETECTED STACK ---"
+          jq '.stack' /tmp/ai-commands.json 2>/dev/null || true
+          echo ""
+          echo "--- COMMANDS TO EXECUTE ---"
+          echo "  Setup:"
+          jq -r '.setup_commands[]? | "    > \(.cmd) -- \(.purpose)"' /tmp/ai-commands.json 2>/dev/null || echo "    (none)"
+          echo "  Checks:"
+          jq -r '.check_commands[]? | "    > \(.cmd) -- \(.purpose) [\(.confidence)]"' /tmp/ai-commands.json 2>/dev/null || echo "    (none)"
+          echo "======================================================="
 
           NODE_VER=$(jq -r '.runtime_requirements.node_version // empty' /tmp/ai-commands.json)
           PYTHON_VER=$(jq -r '.runtime_requirements.python_version // empty' /tmp/ai-commands.json)
@@ -159,7 +175,6 @@ ${CONFIG_FILES:0:40000}"
           PKG_MGR=$(jq -r '.stack.package_manager // empty' /tmp/ai-commands.json)
           PKG_MGR_VER=$(jq -r '.stack.package_manager_version // empty' /tmp/ai-commands.json)
           PKG_MGR_FIELD=$(jq -r '.packageManager // empty' package.json 2>/dev/null)
-
           case "$PKG_MGR" in
             pnpm)
               if [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == pnpm@* ]]; then
@@ -169,7 +184,9 @@ ${CONFIG_FILES:0:40000}"
               else
                 VER="9"
               fi
-              npm install -g "pnpm@${VER}" && pnpm --version
+              echo "Installing pnpm@${VER}..."
+              npm install -g "pnpm@${VER}"
+              echo "pnpm $(pnpm --version)"
               ;;
             yarn)
               if [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == yarn@* ]]; then
@@ -177,10 +194,32 @@ ${CONFIG_FILES:0:40000}"
               else
                 VER="4"
               fi
-              corepack enable && corepack prepare "yarn@${VER}" --activate && yarn --version
+              echo "Installing yarn@${VER}..."
+              corepack enable && corepack prepare "yarn@${VER}" --activate
+              echo "yarn $(yarn --version)"
               ;;
-            *) npm --version ;;
+            *)
+              echo "Using npm $(npm --version)"
+              ;;
           esac
+
+      - name: Configure private registry (Artifactory)
+        if: steps.pass1.outputs.node_version != ''
+        env:
+          ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+        run: |
+          echo "@monsantoit:registry=https://artifactory.bayer.com/artifactory/api/npm/npm-platforms-engineering/" >> ~/.npmrc
+          echo "@element:registry=https://artifactory.bayer.com/artifactory/api/npm/npm-platforms-engineering/" >> ~/.npmrc
+          if [[ -n "$ARTIFACTORY_USERNAME" && -n "$ARTIFACTORY_AUTH_TOKEN" ]]; then
+            echo "//artifactory.bayer.com/artifactory/api/npm/npm-platforms-engineering/:username=$ARTIFACTORY_USERNAME" >> ~/.npmrc
+            echo "//artifactory.bayer.com/artifactory/api/npm/npm-platforms-engineering/:_authToken=$ARTIFACTORY_AUTH_TOKEN" >> ~/.npmrc
+            echo "//artifactory.bayer.com/artifactory/api/npm/npm-platforms-engineering/:always-auth=true" >> ~/.npmrc
+            echo "Artifactory auth configured"
+          else
+            echo "WARNING: No Artifactory credentials - private packages may fail"
+          fi
+          npm config set registry https://registry.npmjs.org/
 
       - name: Setup Python
         if: steps.pass1.outputs.python_version != ''
@@ -198,53 +237,88 @@ ${CONFIG_FILES:0:40000}"
         id: checks
         continue-on-error: true
         run: |
+          echo "======================================================="
+          echo "EXECUTING CHECKS"
+          echo "======================================================="
           RESULTS=""
           OVERALL_EXIT=0
           PASSED_COUNT=0
           FAILED_COUNT=0
+          SETUP_FAILED=false
 
-          echo "::group::Setup (dependency installation)"
+          echo "--- SETUP: Installing dependencies ---"
           SETUP_CMDS=$(jq -r '.setup_commands[]?.cmd // empty' /tmp/ai-commands.json)
           while IFS= read -r cmd; do
             [[ -z "$cmd" ]] && continue
-            echo "▶ $cmd"
-            eval "$cmd" 2>&1 || echo "::warning::Setup failed: $cmd"
+            echo ""
+            echo "  > $cmd"
+            if eval "$cmd" 2>&1; then
+              echo "  OK: Setup command succeeded"
+            else
+              echo "  FAIL: Setup command failed (exit $?)"
+              SETUP_FAILED=true
+            fi
           done <<< "$SETUP_CMDS"
-          echo "::endgroup::"
+          echo ""
 
           CHECK_COUNT=$(jq '.check_commands | length' /tmp/ai-commands.json)
+          echo "--- CHECKS: Running ${CHECK_COUNT} commands ---"
+
           for i in $(seq 0 $((CHECK_COUNT - 1))); do
             CMD=$(jq -r ".check_commands[$i].cmd" /tmp/ai-commands.json)
             PURPOSE=$(jq -r ".check_commands[$i].purpose" /tmp/ai-commands.json)
+            CONFIDENCE=$(jq -r ".check_commands[$i].confidence" /tmp/ai-commands.json)
             [[ -z "$CMD" || "$CMD" == "null" ]] && continue
 
-            echo "::group::$PURPOSE"
-            echo "▶ $CMD"
+            echo ""
+            echo "  [$((i+1))/${CHECK_COUNT}] ${PURPOSE} [${CONFIDENCE}]"
+            echo "  > ${CMD}"
+
             CMD_OUTPUT=$(eval "$CMD" 2>&1) && CMD_EXIT=0 || CMD_EXIT=$?
 
             if [[ $CMD_EXIT -ne 0 ]]; then
               OVERALL_EXIT=1
               FAILED_COUNT=$((FAILED_COUNT + 1))
-              STATUS="❌ FAILED (exit $CMD_EXIT)"
+              STATUS="FAILED (exit $CMD_EXIT)"
+              echo "  RESULT: ${STATUS}"
+              echo "$CMD_OUTPUT" | head -30
             else
               PASSED_COUNT=$((PASSED_COUNT + 1))
-              STATUS="✅ PASSED"
+              STATUS="PASSED"
+              echo "  RESULT: ${STATUS}"
+              echo "$CMD_OUTPUT" | tail -5
             fi
 
-            RESULTS+="### ${PURPOSE} — ${STATUS}
-\`\`\`
-$ ${CMD}
-${CMD_OUTPUT:0:4000}
-\`\`\`
-
-"
-            echo "::endgroup::"
+            RESULTS+="### ${PURPOSE} -- ${STATUS}"$'\n'
+            RESULTS+='```'$'\n'
+            RESULTS+='$ '"${CMD}"$'\n'
+            RESULTS+="${CMD_OUTPUT:0:4000}"$'\n'
+            RESULTS+='```'$'\n\n'
           done
 
-          { echo "**Summary:** ${PASSED_COUNT} passed, ${FAILED_COUNT} failed"; echo ""; echo -e "$RESULTS"; } > /tmp/check-results.txt
+          echo ""
+          echo "======================================================="
+          echo "CHECK RESULTS: ${PASSED_COUNT} passed, ${FAILED_COUNT} failed"
+          if [[ "$SETUP_FAILED" == "true" ]]; then
+            echo "WARNING: Some checks may have failed due to dependency installation failure"
+          fi
+          echo "======================================================="
+
+          {
+            echo "**Summary:** ${PASSED_COUNT} passed, ${FAILED_COUNT} failed"
+            if [[ "$SETUP_FAILED" == "true" ]]; then
+              echo ""
+              echo "> WARNING: Dependency installation failed. Failures below may be due to missing packages, not actual code issues."
+              echo ""
+            fi
+            echo ""
+            echo "$RESULTS"
+          } > /tmp/check-results.txt
+
           echo "exit_code=$OVERALL_EXIT" >> "$GITHUB_OUTPUT"
           echo "passed=$PASSED_COUNT" >> "$GITHUB_OUTPUT"
           echo "failed=$FAILED_COUNT" >> "$GITHUB_OUTPUT"
+          echo "setup_failed=$SETUP_FAILED" >> "$GITHUB_OUTPUT"
 
       - name: "AI Pass 2: Review code and results"
         id: pass2
@@ -252,34 +326,31 @@ ${CMD_OUTPUT:0:4000}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
         run: |
-          if [[ "${{ inputs.review_type }}" == "security" && -f .ai-prompts/prompts/security-scan.md ]]; then
-            SYSTEM_PROMPT=$(cat .ai-prompts/prompts/security-scan.md)
-          elif [[ -f .ai-prompts/prompts/review-results.md ]]; then
-            SYSTEM_PROMPT=$(cat .ai-prompts/prompts/review-results.md)
-          else
-            SYSTEM_PROMPT='You are a senior staff engineer reviewing a PR. Return ONLY valid JSON: {"summary":"...","verdict":"approve|request_changes|comment","confidence":0.85,"check_results_analysis":"...","issues":[],"positives":[],"suggestions":[]}'
-          fi
+          echo "======================================================="
+          echo "AI Pass 2: Reviewing code changes and check results..."
+          echo "======================================================="
+
+          SYSTEM_PROMPT='You are a senior staff engineer reviewing a pull request. You have the PR diff and CI check results. Review for: 1) Code quality and best practices, 2) Security vulnerabilities (OWASP Top 10, hardcoded secrets, injection), 3) Breaking changes, 4) Test coverage gaps, 5) Performance concerns. Distinguish between failures caused by this PR vs pre-existing issues. If dependency install failed, note that check failures may not reflect actual code issues. Return ONLY valid JSON (no markdown fences): {"summary":"1-2 sentence summary","verdict":"approve|request_changes|comment","confidence":0.85,"check_results_analysis":"what CI results mean","issues":[{"severity":"critical|high|medium|low|info","file":"path","line":0,"title":"...","description":"...","suggestion":"..."}],"positives":["things done well"],"suggestions":["non-blocking improvements"]}'
 
           PR_DIFF=$(cat /tmp/pr-diff.txt)
           CHECK_RESULTS=$(cat /tmp/check-results.txt)
           CONFIG_FILES=$(cat /tmp/config-files.txt)
 
-          USER_MSG="## PR: ${{ github.event.pull_request.title }}
-Author: ${{ github.event.pull_request.user.login }}
-Base: ${{ github.base_ref }} ← ${{ github.head_ref }}
+          USER_MSG="## Pull Request: ${{ github.event.pull_request.title }}
+          Author: ${{ github.event.pull_request.user.login }}
+          Base: ${{ github.base_ref }} <- ${{ github.head_ref }}
+          Setup failed: ${{ steps.checks.outputs.setup_failed }}
 
-## Config Files
-${CONFIG_FILES:0:10000}
+          ## Repository Config Files
+          ${CONFIG_FILES:0:10000}
 
-## Code Changes
-\`\`\`diff
-${PR_DIFF:0:30000}
-\`\`\`
+          ## Code Changes (diff)
+          ${PR_DIFF:0:30000}
 
-## CI Check Results
-${CHECK_RESULTS:0:8000}
+          ## CI Check Results (just executed)
+          ${CHECK_RESULTS:0:10000}
 
-Review this PR."
+          Review this PR thoroughly."
 
           RESPONSE=$(curl -s -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
@@ -300,12 +371,14 @@ Review this PR."
 
           REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
           if [[ -z "$REVIEW" ]]; then
-            echo '{"summary":"AI review unavailable","verdict":"comment","confidence":0,"issues":[],"positives":[],"suggestions":[]}' > /tmp/ai-review.txt
+            echo "::warning::AI Pass 2 returned empty response"
+            echo '{"summary":"AI review could not be generated","verdict":"comment","confidence":0,"issues":[],"positives":[],"suggestions":[]}' > /tmp/ai-review.txt
           else
             echo "$REVIEW" > /tmp/ai-review.txt
+            echo "  AI review generated successfully"
           fi
 
-      - name: Post AI review to PR
+      - name: Post review to PR
         if: always()
         uses: actions/github-script@v7
         with:
@@ -319,40 +392,103 @@ Review this PR."
             const passed = '${{ steps.checks.outputs.passed }}' || '0';
             const failed = '${{ steps.checks.outputs.failed }}' || '0';
             const checksExit = '${{ steps.checks.outputs.exit_code }}' || '0';
+            const setupFailed = '${{ steps.checks.outputs.setup_failed }}' === 'true';
 
             let reviewData = {};
-            try { reviewData = JSON.parse(review.replace(/^```json\n?/,'').replace(/\n?```$/,'')); } catch(e) { reviewData = {summary: review.substring(0,200), verdict:'comment', issues:[], positives:[], suggestions:[]}; }
+            try {
+              const cleaned = review.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+              reviewData = JSON.parse(cleaned);
+            } catch(e) {
+              reviewData = { summary: review.substring(0, 500), verdict: 'comment', confidence: 0, issues: [], positives: [], suggestions: [] };
+            }
 
-            const stackInfo = commands.stack ? `${commands.stack.language||'?'} / ${commands.stack.framework||'?'} / ${commands.stack.package_manager||'?'}` : 'Unknown';
-            const cmdList = (commands.check_commands||[]).map(c => `- \`${c.cmd}\` — ${c.purpose}`).join('\n');
-            const verdictEmoji = {'approve':'✅','request_changes':'🔴','comment':'💬'}[reviewData.verdict] || '💬';
-            const statusEmoji = checksExit === '0' ? '✅' : '⚠️';
+            const stackInfo = commands.stack
+              ? `${commands.stack.language || '?'} / ${commands.stack.framework || '?'} / ${commands.stack.package_manager || '?'}`
+              : 'Unknown';
 
-            const issuesList = (reviewData.issues||[]).map(i => {
-              const sev = {'critical':'🚨','high':'🔴','medium':'🟡','low':'🔵','info':'ℹ️'}[i.severity] || '•';
-              const loc = i.file ? `\`${i.file}${i.line?':'+i.line:''}\`` : '';
-              return `${sev} **${i.title}** ${loc}\n   ${i.description}${i.suggestion?'\n   💡 '+i.suggestion:''}`;
+            const cmdList = (commands.check_commands || [])
+              .map(c => `| \`${c.cmd}\` | ${c.purpose} | ${c.confidence} |`)
+              .join('\n');
+
+            const verdictEmoji = { approve: '\u2705', request_changes: '\ud83d\udd34', comment: '\ud83d\udcac' }[reviewData.verdict] || '\ud83d\udcac';
+            const statusEmoji = checksExit === '0' ? '\u2705' : (setupFailed ? '\u26a0\ufe0f' : '\u274c');
+
+            const issuesList = (reviewData.issues || []).map(i => {
+              const sev = { critical: '\ud83d\udea8', high: '\ud83d\udd34', medium: '\ud83d\udfe1', low: '\ud83d\udd35', info: '\u2139\ufe0f' }[i.severity] || '-';
+              const loc = i.file ? `\`${i.file}${i.line ? ':' + i.line : ''}\`` : '';
+              return `${sev} **${i.title}** ${loc}\n   ${i.description}${i.suggestion ? '\n   Suggestion: ' + i.suggestion : ''}`;
             }).join('\n\n');
 
-            const positives = (reviewData.positives||[]).map(p => `- ✅ ${p}`).join('\n');
-            const suggestions = (reviewData.suggestions||[]).map(s => `- 💡 ${s}`).join('\n');
+            const positives = (reviewData.positives || []).map(p => `- ${p}`).join('\n');
+            const suggestions = (reviewData.suggestions || []).map(s => `- ${s}`).join('\n');
 
             const body = [
-              `## 🤖 AI Code Review — ${verdictEmoji} ${(reviewData.verdict||'comment').replace('_',' ').toUpperCase()}`,
-              '', `> ${reviewData.summary || 'Review complete.'}`, '',
-              `| Stack | Checks | Confidence |`, `|-------|--------|------------|`,
-              `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${Math.round((reviewData.confidence||0)*100)}% |`, '',
-              reviewData.check_results_analysis ? `**CI Analysis:** ${reviewData.check_results_analysis}\n` : '',
+              `## AI Code Review - ${verdictEmoji} ${(reviewData.verdict || 'comment').replace('_', ' ').toUpperCase()}`,
+              '',
+              `> ${reviewData.summary || 'Review complete.'}`,
+              '',
+              `| Stack | Checks | Confidence |`,
+              `|-------|--------|------------|`,
+              `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${Math.round((reviewData.confidence || 0) * 100)}% |`,
+              '',
+              reviewData.check_results_analysis ? `### CI Analysis\n${reviewData.check_results_analysis}\n` : '',
               issuesList ? `### Issues Found\n\n${issuesList}\n` : '',
-              positives ? `### What's Good\n\n${positives}\n` : '',
+              positives ? `### What is Good\n\n${positives}\n` : '',
               suggestions ? `### Suggestions\n\n${suggestions}\n` : '',
-              '<details><summary>📋 Commands AI ran</summary>\n', cmdList || '_None_', '\n</details>', '',
-              '<details><summary>📊 Full Output</summary>\n', checks, '\n</details>', '',
-              '---', '<sub>🔮 <a href="https://github.com/bayer-int/agentic-review">agentic-review</a> | Informational only</sub>',
+              '',
+              '<details><summary>Commands AI decided to run</summary>',
+              '',
+              '| Command | Purpose | Confidence |',
+              '|---------|---------|------------|',
+              cmdList || '| _None generated_ | | |',
+              '',
+              '</details>',
+              '',
+              '<details><summary>Full Check Output</summary>',
+              '',
+              checks,
+              '',
+              '</details>',
+              '',
+              '---',
+              '<sub>Powered by <a href="https://github.com/bayer-int/agentic-review">agentic-review</a> | Informational only - does not block merging</sub>',
             ].filter(Boolean).join('\n');
 
-            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+            console.log('Review posted to PR #' + context.issue.number);
 
-      - name: Pipeline complete
+      - name: Write step summary
         if: always()
-        run: echo "✅ AI review posted to PR"
+        run: |
+          echo "## AI Code Review Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          LANG=$(jq -r '.stack.language // "unknown"' /tmp/ai-commands.json 2>/dev/null)
+          FRAMEWORK=$(jq -r '.stack.framework // "unknown"' /tmp/ai-commands.json 2>/dev/null)
+          PKG=$(jq -r '.stack.package_manager // "unknown"' /tmp/ai-commands.json 2>/dev/null)
+          echo "**Stack:** ${LANG} / ${FRAMEWORK} / ${PKG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          PASSED="${{ steps.checks.outputs.passed }}"
+          FAILED="${{ steps.checks.outputs.failed }}"
+          if [[ "${{ steps.checks.outputs.exit_code }}" == "0" ]]; then
+            echo "**Checks:** All ${PASSED} checks passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Checks:** ${PASSED} passed, ${FAILED} failed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Commands Executed" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.check_commands[]? | "- \(.cmd) -- \(.purpose)"' /tmp/ai-commands.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Done
+        if: always()
+        run: |
+          echo "======================================================="
+          echo "AI REVIEW PIPELINE COMPLETE"
+          echo "  Checks: ${{ steps.checks.outputs.passed }} passed, ${{ steps.checks.outputs.failed }} failed"
+          echo "  Review posted to PR #${{ github.event.pull_request.number }}"
+          echo "======================================================="
