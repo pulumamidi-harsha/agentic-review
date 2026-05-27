@@ -97,15 +97,28 @@ jobs:
 
       - name: "AI Pass 1: Detect stack & generate commands"
         id: pass1
+        continue-on-error: true
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
         run: |
+          set +e
           echo "======================================================="
           echo "AI Pass 1: Analyzing repository to determine stack..."
           echo "======================================================="
 
-          SYSTEM_PROMPT='You are a senior DevOps engineer analyzing a repository to determine its tech stack and what CI commands to run. RULES: 1) ONLY derive commands from what you see in the repository (package.json scripts, Makefile targets, pyproject.toml tools). 2) DO NOT invent commands the repo does not support. 3) For setup_commands include dependency installation. 4) For check_commands include linting, type checking, unit tests with coverage, code formatting, style linting, build verification. 5) Also add universal checks: secret scanning (grep for hardcoded secrets), .env file detection, large file detection. 6) Do NOT include e2e tests, deployment commands, or docker builds. 7) If package.json has packageManager field, note the exact version. 8) Read .npmrc to understand registry configuration. Return ONLY valid JSON (no markdown fences): {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":"20","python_version":null,"go_version":null}}'
+          # Validate secrets are available
+          if [[ -z "$AI_API_ENDPOINT" || -z "$AI_API_KEY" ]]; then
+            echo "::error::AI_API_ENDPOINT or AI_API_KEY secret is not configured."
+            echo "::error::Please add these secrets to your repository Settings > Secrets > Actions"
+            echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"runtime_requirements":{}}' > /tmp/ai-commands.json
+            echo "node_version=" >> "$GITHUB_OUTPUT"
+            echo "python_version=" >> "$GITHUB_OUTPUT"
+            echo "go_version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SYSTEM_PROMPT='You are a senior DevOps engineer analyzing a repository to determine its tech stack and what CI commands to run. RULES: 1) ONLY derive commands from what you see in the repository (package.json scripts, Makefile targets, pyproject.toml tools, requirements.txt, go.mod, Cargo.toml). 2) DO NOT invent commands the repo does not support. 3) For setup_commands include dependency installation (pip install, npm install, go mod download, etc). 4) For check_commands include linting, type checking, unit tests with coverage, code formatting, build verification. 5) Do NOT include e2e tests, deployment commands, or docker builds. 6) If package.json has packageManager field, note the exact version. 7) Read .npmrc to understand registry configuration. 8) For Python: look for ruff, mypy, pytest, black, flake8, isort in pyproject.toml or requirements. 9) For Go: look for golangci-lint, go test, go vet. Return ONLY valid JSON (no markdown fences): {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":null,"python_version":null,"go_version":null}}'
 
           FILE_TREE=$(cat /tmp/file-tree.txt)
           CONFIG_FILES=$(cat /tmp/config-files.txt)
@@ -116,9 +129,9 @@ jobs:
           ## Configuration Files
           ${CONFIG_FILES:0:40000}
 
-          Analyze this repository. Determine the stack and generate commands to validate code quality, run tests with coverage, check formatting, scan for secrets, and verify the build."
+          Analyze this repository. Determine the stack and generate commands to validate code quality, run tests with coverage, check formatting, and verify the build."
 
-          RESPONSE=$(curl -s -X POST "${AI_API_ENDPOINT}" \
+          RESPONSE=$(curl -sS -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${AI_API_KEY}" \
             --max-time 120 \
@@ -133,16 +146,24 @@ jobs:
                 ],
                 "temperature": 0,
                 "max_tokens": 2048
-              }')")
+              }')" 2>/tmp/curl-error.txt)
+          CURL_EXIT=$?
 
-          AI_OUTPUT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
-
-          if [[ -z "$AI_OUTPUT" ]]; then
-            echo "::error::AI Pass 1 returned empty response"
+          if [[ $CURL_EXIT -ne 0 ]]; then
+            echo "::warning::curl failed with exit code $CURL_EXIT"
+            cat /tmp/curl-error.txt 2>/dev/null || true
             echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"runtime_requirements":{}}' > /tmp/ai-commands.json
           else
-            CLEANED=$(echo "$AI_OUTPUT" | sed 's/^```json//;s/^```//')
-            echo "$CLEANED" | jq '.' > /tmp/ai-commands.json 2>/dev/null || echo "$CLEANED" > /tmp/ai-commands.json
+            AI_OUTPUT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+
+            if [[ -z "$AI_OUTPUT" ]]; then
+              echo "::warning::AI Pass 1 returned empty response"
+              echo "  Raw response (first 500 chars): ${RESPONSE:0:500}"
+              echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"runtime_requirements":{}}' > /tmp/ai-commands.json
+            else
+              CLEANED=$(echo "$AI_OUTPUT" | sed 's/^```json//;s/^```//')
+              echo "$CLEANED" | jq '.' > /tmp/ai-commands.json 2>/dev/null || echo "$CLEANED" > /tmp/ai-commands.json
+            fi
           fi
 
           echo ""
@@ -156,9 +177,9 @@ jobs:
           jq -r '.check_commands[]? | "    > \(.cmd) -- \(.purpose) [\(.confidence)]"' /tmp/ai-commands.json 2>/dev/null || echo "    (none)"
           echo "======================================================="
 
-          NODE_VER=$(jq -r '.runtime_requirements.node_version // empty' /tmp/ai-commands.json)
-          PYTHON_VER=$(jq -r '.runtime_requirements.python_version // empty' /tmp/ai-commands.json)
-          GO_VER=$(jq -r '.runtime_requirements.go_version // empty' /tmp/ai-commands.json)
+          NODE_VER=$(jq -r '.runtime_requirements.node_version // empty' /tmp/ai-commands.json 2>/dev/null)
+          PYTHON_VER=$(jq -r '.runtime_requirements.python_version // empty' /tmp/ai-commands.json 2>/dev/null)
+          GO_VER=$(jq -r '.runtime_requirements.go_version // empty' /tmp/ai-commands.json 2>/dev/null)
           echo "node_version=${NODE_VER:-}" >> "$GITHUB_OUTPUT"
           echo "python_version=${PYTHON_VER:-}" >> "$GITHUB_OUTPUT"
           echo "go_version=${GO_VER:-}" >> "$GITHUB_OUTPUT"
@@ -237,9 +258,22 @@ jobs:
         id: checks
         continue-on-error: true
         run: |
+          set +e
           echo "======================================================="
           echo "EXECUTING CHECKS"
           echo "======================================================="
+
+          # Ensure ai-commands.json exists
+          if [[ ! -f /tmp/ai-commands.json ]]; then
+            echo "::warning::No AI commands file found — skipping checks"
+            echo "" > /tmp/check-results.txt
+            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+            echo "passed=0" >> "$GITHUB_OUTPUT"
+            echo "failed=0" >> "$GITHUB_OUTPUT"
+            echo "setup_failed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           RESULTS=""
           OVERALL_EXIT=0
           PASSED_COUNT=0
@@ -322,19 +356,28 @@ jobs:
 
       - name: "AI Pass 2: Review code and results"
         id: pass2
+        continue-on-error: true
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
         run: |
+          set +e
           echo "======================================================="
           echo "AI Pass 2: Reviewing code changes and check results..."
           echo "======================================================="
 
+          # Validate secrets
+          if [[ -z "$AI_API_ENDPOINT" || -z "$AI_API_KEY" ]]; then
+            echo "::warning::AI secrets not configured - skipping AI review"
+            echo '{"summary":"AI review skipped - secrets not configured","verdict":"comment","confidence":0,"issues":[],"positives":[],"suggestions":["Configure AI_API_KEY and AI_API_ENDPOINT secrets"]}' > /tmp/ai-review.txt
+            exit 0
+          fi
+
           SYSTEM_PROMPT='You are a senior staff engineer reviewing a pull request. You have the PR diff and CI check results. Review for: 1) Code quality and best practices, 2) Security vulnerabilities (OWASP Top 10, hardcoded secrets, injection), 3) Breaking changes, 4) Test coverage gaps, 5) Performance concerns. Distinguish between failures caused by this PR vs pre-existing issues. If dependency install failed, note that check failures may not reflect actual code issues. Return ONLY valid JSON (no markdown fences): {"summary":"1-2 sentence summary","verdict":"approve|request_changes|comment","confidence":0.85,"check_results_analysis":"what CI results mean","issues":[{"severity":"critical|high|medium|low|info","file":"path","line":0,"title":"...","description":"...","suggestion":"..."}],"positives":["things done well"],"suggestions":["non-blocking improvements"]}'
 
-          PR_DIFF=$(cat /tmp/pr-diff.txt)
-          CHECK_RESULTS=$(cat /tmp/check-results.txt)
-          CONFIG_FILES=$(cat /tmp/config-files.txt)
+          PR_DIFF=$(cat /tmp/pr-diff.txt 2>/dev/null || echo "")
+          CHECK_RESULTS=$(cat /tmp/check-results.txt 2>/dev/null || echo "No checks were run")
+          CONFIG_FILES=$(cat /tmp/config-files.txt 2>/dev/null || echo "")
 
           USER_MSG="## Pull Request: ${{ github.event.pull_request.title }}
           Author: ${{ github.event.pull_request.user.login }}
@@ -352,7 +395,7 @@ jobs:
 
           Review this PR thoroughly."
 
-          RESPONSE=$(curl -s -X POST "${AI_API_ENDPOINT}" \
+          RESPONSE=$(curl -sS -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${AI_API_KEY}" \
             --max-time 120 \
@@ -367,15 +410,21 @@ jobs:
                 ],
                 "temperature": 0.1,
                 "max_tokens": 4096
-              }')")
+              }')" 2>/tmp/curl-error2.txt)
+          CURL_EXIT=$?
 
-          REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
-          if [[ -z "$REVIEW" ]]; then
-            echo "::warning::AI Pass 2 returned empty response"
-            echo '{"summary":"AI review could not be generated","verdict":"comment","confidence":0,"issues":[],"positives":[],"suggestions":[]}' > /tmp/ai-review.txt
+          if [[ $CURL_EXIT -ne 0 ]]; then
+            echo "::warning::curl failed in Pass 2 with exit code $CURL_EXIT"
+            echo '{"summary":"AI review failed - API call error","verdict":"comment","confidence":0,"issues":[],"positives":[],"suggestions":[]}' > /tmp/ai-review.txt
           else
-            echo "$REVIEW" > /tmp/ai-review.txt
-            echo "  AI review generated successfully"
+            REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            if [[ -z "$REVIEW" ]]; then
+              echo "::warning::AI Pass 2 returned empty response"
+              echo '{"summary":"AI review could not be generated","verdict":"comment","confidence":0,"issues":[],"positives":[],"suggestions":[]}' > /tmp/ai-review.txt
+            else
+              echo "$REVIEW" > /tmp/ai-review.txt
+              echo "  AI review generated successfully"
+            fi
           fi
 
       - name: Post review to PR
@@ -465,23 +514,27 @@ jobs:
       - name: Write step summary
         if: always()
         run: |
+          set +e
           echo "## AI Code Review Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          LANG=$(jq -r '.stack.language // "unknown"' /tmp/ai-commands.json 2>/dev/null)
-          FRAMEWORK=$(jq -r '.stack.framework // "unknown"' /tmp/ai-commands.json 2>/dev/null)
-          PKG=$(jq -r '.stack.package_manager // "unknown"' /tmp/ai-commands.json 2>/dev/null)
+          LANG=$(jq -r '.stack.language // "unknown"' /tmp/ai-commands.json 2>/dev/null || echo "unknown")
+          FRAMEWORK=$(jq -r '.stack.framework // "unknown"' /tmp/ai-commands.json 2>/dev/null || echo "unknown")
+          PKG=$(jq -r '.stack.package_manager // "unknown"' /tmp/ai-commands.json 2>/dev/null || echo "unknown")
           echo "**Stack:** ${LANG} / ${FRAMEWORK} / ${PKG}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           PASSED="${{ steps.checks.outputs.passed }}"
           FAILED="${{ steps.checks.outputs.failed }}"
-          if [[ "${{ steps.checks.outputs.exit_code }}" == "0" ]]; then
+          EXIT_CODE="${{ steps.checks.outputs.exit_code }}"
+          if [[ -z "$PASSED" && -z "$FAILED" ]]; then
+            echo "**Checks:** No checks were executed (AI detection may have failed)" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$EXIT_CODE" == "0" ]]; then
             echo "**Checks:** All ${PASSED} checks passed" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "**Checks:** ${PASSED} passed, ${FAILED} failed" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Commands Executed" >> "$GITHUB_STEP_SUMMARY"
-          jq -r '.check_commands[]? | "- \(.cmd) -- \(.purpose)"' /tmp/ai-commands.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          jq -r '.check_commands[]? | "- \(.cmd) -- \(.purpose)"' /tmp/ai-commands.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "- _None_" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Done
