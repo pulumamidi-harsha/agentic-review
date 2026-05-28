@@ -5,21 +5,24 @@
 # Required secrets (set at org or repo level):
 #   - AI_API_KEY: MGA/OpenAI API key
 #   - AI_API_ENDPOINT: LLM endpoint URL
-#   - ORG_PAT: Org-level PAT with repo read access
+#   - ORG_PAT: Org-level PAT with repo read access (also used for SonarQube results)
 #
 # Optional secrets:
-#   - ARTIFACTORY_USERNAME: Bayer Artifactory username (for private npm packages)
-#   - ARTIFACTORY_AUTH_TOKEN: Bayer Artifactory auth token
+#   - ARTIFACTORY_USERNAME: Bayer Artifactory username (for Docker builds needing private packages)
+#   - ARTIFACTORY_AUTH_TOKEN: Bayer Artifactory auth token (auto-mapped to Dockerfile ARGs)
 #
-# SonarQube Integration:
-#   If your repo has a SonarQube job, AI review automatically picks up its results
-#   via GitHub Checks API. No SONAR_TOKEN needed — just ensure SonarQube runs on PRs.
+# SonarQube: Results are automatically picked up from existing SonarQube check runs
+# on the PR (no SONAR_TOKEN needed — uses GitHub Checks API via ORG_PAT).
 # ────────────────────────────────────────────────────────────────────────────────
 name: AI PR Review
 
 on:
   pull_request:
     branches: [main, dev]
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   ai-review:
