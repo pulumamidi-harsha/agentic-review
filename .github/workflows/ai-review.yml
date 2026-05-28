@@ -194,13 +194,30 @@ jobs:
 
           SYSTEM_PROMPT='You are a senior DevOps engineer analyzing a repository to determine its tech stack and what CI commands to run.
 
-          SUPPORTED STACKS: Node.js, TypeScript, Python, Go, Rust, Java, Kotlin, Ruby, Elixir, PHP, C#/.NET, Scala, Swift, Terraform, Helm.
+          SUPPORTED STACKS: Node.js, TypeScript, Python, Go, Rust, Java, Kotlin, Ruby, Elixir, PHP, C#/.NET, Scala, Swift, Terraform, Helm, CloudFormation, Ansible.
+
+          MONOREPO / MULTI-STACK HANDLING:
+          - A repository may contain MULTIPLE stacks (e.g., frontend + backend + infrastructure).
+          - Detect ALL stacks present. List them in "stacks" array.
+          - Generate setup and check commands for EACH stack with proper directory context (cd into subdirectory first).
+          - Example: a repo with frontend/ (React) + backend/ (Python) + infra/ (Terraform) should generate:
+            setup: ["cd frontend && npm install", "cd backend && pip install -r requirements.txt"]
+            checks: ["cd frontend && npm run lint", "cd frontend && npm run test", "cd backend && ruff check .", "cd backend && pytest", "cd infra && terraform fmt -check", "cd infra && terraform validate"]
+          - Set ALL runtime versions needed (node_version AND python_version AND terraform_version etc.)
+
+          INFRASTRUCTURE-AS-CODE (IaC) CHECKS:
+          - Terraform: terraform fmt -check, terraform init -backend=false && terraform validate, tflint (if .tflint.hcl exists), checkov -d . (if checkov config exists)
+          - Helm: helm lint ., helm template . (for syntax verification)
+          - CloudFormation: cfn-lint **/*.yaml (if templates/ or cfn/ dirs exist)
+          - Ansible: ansible-lint (if ansible.cfg or playbooks/ exist)
+          - Kubernetes manifests: kubeval or kubeconform (if k8s/ or manifests/ dirs exist)
+          - For Terraform repos, always run fmt + validate. If modules/ dir exists, validate each module.
 
           RULES:
           1) ONLY derive commands from what you see in the repository config files.
           2) DO NOT invent commands the repo does not support.
-          3) For setup_commands: include dependency installation.
-          4) For check_commands: include linting, type checking, formatting, unit tests, build verification.
+          3) For setup_commands: include dependency installation for ALL stacks. Use `cd <dir> &&` prefix for subdirectories.
+          4) For check_commands: include linting, type checking, formatting, unit tests, build verification for ALL stacks.
           5) Do NOT include e2e tests, deployment commands, or docker builds.
           6) Stack-specific guidance:
              - Node/TS: read package.json scripts, packageManager field, .npmrc
@@ -212,11 +229,13 @@ jobs:
              - PHP: read composer.json → phpstan, phpunit, php-cs-fixer
              - Java/Kotlin: read pom.xml or build.gradle → mvn verify or gradle check
              - C#/.NET: read *.csproj, *.sln → dotnet build, dotnet test
-             - Terraform: read *.tf → terraform fmt -check, terraform validate, tflint
-             - Helm: read Chart.yaml → helm lint
+             - Terraform: read *.tf → terraform fmt -check, terraform init -backend=false && terraform validate, tflint
+             - Helm: read Chart.yaml → helm lint, helm template
+             - Ansible: read ansible.cfg → ansible-lint
+             - Kubernetes: kubeval/kubeconform for manifest files
 
           Return ONLY valid JSON (no markdown fences):
-          {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":null,"python_version":null,"go_version":null,"ruby_version":null,"java_version":null,"dotnet_version":null,"php_version":null,"elixir_version":null,"terraform_version":null}}'
+          {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"stacks":[{"language":"...","framework":"...","directory":"root or subdir path"}],"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":null,"python_version":null,"go_version":null,"ruby_version":null,"java_version":null,"dotnet_version":null,"php_version":null,"elixir_version":null,"terraform_version":null}}'
 
           FILE_TREE=$(cat /tmp/file-tree.txt)
           CONFIG_FILES=$(cat /tmp/config-files.txt)
@@ -227,7 +246,7 @@ jobs:
           ## Configuration Files
           ${CONFIG_FILES:0:40000}
 
-          Analyze this repository. Determine the stack and generate commands to validate code quality, run tests with coverage, check formatting, and verify the build."
+          Analyze this repository. It may be a monorepo with multiple stacks in different directories. Detect ALL stacks present. Generate commands for each stack to validate code quality, run tests, check formatting, and verify builds. For infrastructure code (Terraform, Helm, Kubernetes), include IaC-specific validation checks. Use 'cd <dir> &&' prefix when commands need to run in subdirectories."
 
           RESPONSE=$(curl -sS -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
@@ -1252,6 +1271,12 @@ jobs:
               ? `${commands.stack.language || '?'} / ${commands.stack.framework || '?'} / ${commands.stack.package_manager || '?'}`
               : 'Unknown';
 
+            // Multi-stack display for monorepos
+            const allStacks = (commands.stacks || []);
+            const multiStackInfo = allStacks.length > 1
+              ? '\n\n**Detected Stacks:**\n' + allStacks.map(s => `- ${s.language}${s.framework ? ' / ' + s.framework : ''} (\`${s.directory || 'root'}\`)`).join('\n') + '\n'
+              : '';
+
             const cmdList = (commands.check_commands || [])
               .map((c, i) => `${i+1}. \`${c.cmd}\`\n   - **Purpose:** ${c.purpose}\n   - **Confidence:** ${c.confidence}`)
               .join('\n');
@@ -1295,6 +1320,7 @@ jobs:
               `| Stack | Checks | Security | Confidence | Duration |`,
               `|-------|--------|----------|------------|----------|`,
               `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${securityExit === '0' ? '\u2705' : '\u26a0\ufe0f'} | ${Math.round((reviewData.confidence || 0) * 100)}% | ${durationStr} |`,
+              multiStackInfo,
               '',
               reviewData.check_results_analysis ? `### CI Analysis\n${reviewData.check_results_analysis}\n` : '',
               reviewData.security_analysis ? `### Security Analysis\n${reviewData.security_analysis}\n` : '',
