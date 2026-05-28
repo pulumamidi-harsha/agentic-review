@@ -1476,9 +1476,25 @@ jobs:
           - "reject": PR introduces critical security vulnerabilities, major logic errors, breaking changes, OR SonarQube Quality Gate FAILED due to issues in the PR changes.
           - ONLY judge the FILES CHANGED in this PR. Pre-existing repo issues go in repo_health, NOT in the verdict.
           - If the only issues are pre-existing (base image CVEs, missing LICENSE, etc.), verdict MUST be "approve".
-          - A thin GitHub Actions caller workflow that just references a reusable workflow (uses: org/repo/.github/workflows/file.yml@ref) is a STANDARD PATTERN. If the YAML is syntactically valid and uses version pinning (@main, @v1, @sha), verdict MUST be "approve".
-          - Do NOT flag YAML/JSON files as having issues if they pass syntax validation. A "valid YAML" result means no issue exists.
           - Scanner tool failures (e.g., Trivy download failure) are NOT code issues — do not count them against the PR.
+
+          GITHUB ACTIONS WORKFLOW FILES (ABSOLUTE RULE - NO EXCEPTIONS):
+          - If a changed file is a GitHub Actions workflow (.github/workflows/*.yml) that:
+            1. Has valid YAML syntax (i.e., it was parsed and executed by GitHub Actions without syntax errors), AND
+            2. References a reusable workflow with uses: org/repo/.github/workflows/file.yml@ref
+          - Then the verdict MUST be "approve". PERIOD.
+          - Do NOT say "YAML is invalid" unless you can cite the EXACT line number and the EXACT syntax error.
+          - If GitHub Actions successfully parsed and ran the workflow, THE YAML IS VALID. Do not contradict GitHub Actions.
+          - A missing trailing newline (EOF) is NOT a YAML validity issue. Never flag it as such.
+          - The @ref can be @main, @v1, @sha-hash — ALL are valid pinning strategies.
+          - Passing secrets via the secrets: block is the CORRECT and STANDARD way to pass secrets to reusable workflows.
+          - Do NOT invent issues that do not exist. If you cannot point to a specific error with a line number, there is no issue.
+
+          DO NOT HALLUCINATE:
+          - Never claim a file has issues unless you can cite the EXACT line and EXACT error from the diff.
+          - If security scans (gitleaks, YAML validation) pass, do NOT override them with your own "analysis".
+          - If the CI successfully ran the workflow file, it is syntactically valid. Full stop.
+          - Consistency is paramount: the same file structure must always get the same verdict.
 
           SONARQUBE RULES (CRITICAL):
           - If SonarQube Quality Gate FAILED → verdict MUST be "reject". Explain why in the summary (e.g., security hotspot, coverage threshold, code smells).
