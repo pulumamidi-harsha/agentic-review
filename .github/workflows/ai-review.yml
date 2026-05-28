@@ -1740,8 +1740,41 @@ jobs:
             }
 
             // Auto-submit PR review status based on verdict
-            // This changes the PR status (approved/changes requested) automatically
+            // First dismiss any previous bot reviews to avoid spam
             const verdict = reviewData.verdict;
+            try {
+              const { data: existingReviews } = await github.rest.pulls.listReviews({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number
+              });
+
+              // Find previous reviews by this bot (github-actions[bot])
+              const botReviews = existingReviews.filter(r =>
+                r.user.login === 'github-actions[bot]' &&
+                (r.state === 'APPROVED' || r.state === 'CHANGES_REQUESTED')
+              );
+
+              // Dismiss previous bot reviews
+              for (const review of botReviews) {
+                try {
+                  await github.rest.pulls.dismissReview({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: context.issue.number,
+                    review_id: review.id,
+                    message: 'Superseded by new AI review run'
+                  });
+                  console.log('Dismissed previous review #' + review.id + ' (' + review.state + ')');
+                } catch(e) {
+                  console.log('Could not dismiss review #' + review.id + ': ' + e.message);
+                }
+              }
+            } catch(e) {
+              console.log('Could not list/dismiss reviews: ' + e.message);
+            }
+
+            // Now submit the new review
             if (verdict === 'approve') {
               try {
                 await github.rest.pulls.createReview({
