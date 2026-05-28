@@ -764,7 +764,10 @@ jobs:
               [[ -z "$line" ]] && continue
               arg_name=$(echo "$line" | grep -oP '`\K[^`]+')
               if [[ -n "$arg_name" ]]; then
-                DOCKER_RESULTS+="  ${arg_name}: \${{ secrets.${arg_name} }}"$'\n'
+                DOCKER_RESULTS+="  ${arg_name}: \$"
+                DOCKER_RESULTS+="{{"
+                DOCKER_RESULTS+=" secrets.${arg_name} "
+                DOCKER_RESULTS+="}}"$'\n'
               fi
             done <<< "$MISSING_SECRETS"
             DOCKER_RESULTS+='```'$'\n\n'
