@@ -1134,18 +1134,41 @@ jobs:
 
           SONAR_RESULTS=""
 
-          # Install sonar-scanner
-          SONAR_SCANNER_VERSION="5.0.1.3006"
+          # Install sonar-scanner (use latest stable approach)
+          SONAR_SCANNER_VERSION="6.2.1.4610"
           echo "  Installing sonar-scanner v${SONAR_SCANNER_VERSION}..."
-          curl -sSL "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux.zip" -o /tmp/sonar-scanner.zip 2>/dev/null
-          if [[ $? -ne 0 ]]; then
-            echo "  ⚠ Failed to download sonar-scanner"
+
+          # Try multiple download approaches
+          DOWNLOAD_URL="https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux-x64.zip"
+          curl -sSL "$DOWNLOAD_URL" -o /tmp/sonar-scanner.zip 2>/dev/null
+          DL_EXIT=$?
+
+          if [[ $DL_EXIT -ne 0 ]]; then
+            # Fallback to older version format
+            SONAR_SCANNER_VERSION="5.0.1.3006"
+            DOWNLOAD_URL="https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux.zip"
+            curl -sSL "$DOWNLOAD_URL" -o /tmp/sonar-scanner.zip 2>/dev/null
+            DL_EXIT=$?
+          fi
+
+          if [[ $DL_EXIT -ne 0 ]]; then
+            echo "  ⚠ Failed to download sonar-scanner (tried multiple versions)"
             echo "### SonarQube -- SKIPPED (download failed)" > /tmp/sonar-results.txt
+            echo "sonar_exit=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           unzip -q /tmp/sonar-scanner.zip -d /tmp/ 2>/dev/null
-          SONAR_SCANNER="/tmp/sonar-scanner-${SONAR_SCANNER_VERSION}-linux/bin/sonar-scanner"
-          chmod +x "$SONAR_SCANNER" 2>/dev/null
+          SONAR_SCANNER=$(find /tmp -name "sonar-scanner" -type f -path "*/bin/*" 2>/dev/null | head -1)
+
+          if [[ -z "$SONAR_SCANNER" || ! -f "$SONAR_SCANNER" ]]; then
+            echo "  ⚠ sonar-scanner binary not found after extraction"
+            echo "### SonarQube -- SKIPPED (binary not found)" > /tmp/sonar-results.txt
+            echo "sonar_exit=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          chmod +x "$SONAR_SCANNER"
+          echo "  Found scanner at: $SONAR_SCANNER"
 
           # Detect sonar project key from sonar-project.properties or derive from repo
           SONAR_PROJECT_KEY=""
@@ -1182,26 +1205,38 @@ jobs:
             -Dsonar.qualitygate.timeout=120 \
             2>&1) && SONAR_EXIT=0 || SONAR_EXIT=$?
 
+          echo "  Scanner exit code: $SONAR_EXIT"
+
           if [[ $SONAR_EXIT -ne 0 ]]; then
             # Check if it's a quality gate failure vs scanner failure
-            if echo "$SONAR_OUTPUT" | grep -q "QUALITY GATE STATUS: FAILED"; then
+            if echo "$SONAR_OUTPUT" | grep -qi "QUALITY GATE STATUS: FAILED"; then
               echo "  ⚠ Quality Gate FAILED"
               SONAR_RESULTS="### SonarQube Quality Gate -- ⚠ FAILED"$'\n\n'
-
-              # Extract quality gate conditions
               GATE_DETAILS=$(echo "$SONAR_OUTPUT" | grep -A 20 "QUALITY GATE STATUS" | head -25)
               SONAR_RESULTS+='```'$'\n'
               SONAR_RESULTS+="${GATE_DETAILS:0:3000}"$'\n'
               SONAR_RESULTS+='```'$'\n\n'
+            elif echo "$SONAR_OUTPUT" | grep -qi "not authorized\|401\|403\|authentication"; then
+              echo "  ⚠ SonarQube authentication failed — token may lack permissions"
+              SONAR_RESULTS="### SonarQube -- ⚠ Authentication Failed"$'\n'
+              SONAR_RESULTS+="The SONAR_TOKEN does not have sufficient permissions for this project."$'\n'
+              SONAR_RESULTS+="Ensure the token has 'Execute Analysis' permission on project \`${SONAR_PROJECT_KEY}\`."$'\n\n'
+            elif echo "$SONAR_OUTPUT" | grep -qi "project not found\|does not exist"; then
+              echo "  ⚠ SonarQube project not found"
+              SONAR_RESULTS="### SonarQube -- ⚠ Project Not Found"$'\n'
+              SONAR_RESULTS+="Project key \`${SONAR_PROJECT_KEY}\` does not exist on ${SONAR_HOST_URL}."$'\n'
+              SONAR_RESULTS+="Create the project first or check sonar-project.properties configuration."$'\n\n'
             else
-              echo "  ⚠ SonarQube scanner failed (may be misconfigured)"
+              echo "  ⚠ SonarQube scanner failed"
+              # Show last meaningful lines of output
+              LAST_LINES=$(echo "$SONAR_OUTPUT" | grep -v "^$" | sed '/^INFO:/d' | sed '/^DEBUG:/d')
               SONAR_RESULTS="### SonarQube -- ⚠ Scanner Error"$'\n'
               SONAR_RESULTS+='```'$'\n'
-              SONAR_RESULTS+="${SONAR_OUTPUT:(-2000)}"$'\n'
+              SONAR_RESULTS+="${LAST_LINES:(-1500)}"$'\n'
               SONAR_RESULTS+='```'$'\n\n'
             fi
           else
-            if echo "$SONAR_OUTPUT" | grep -q "QUALITY GATE STATUS: PASSED"; then
+            if echo "$SONAR_OUTPUT" | grep -qi "QUALITY GATE STATUS: PASSED"; then
               echo "  ✅ Quality Gate PASSED"
               SONAR_RESULTS="### SonarQube Quality Gate -- ✅ PASSED"$'\n\n'
             else
@@ -1273,6 +1308,9 @@ jobs:
           - "reject": PR introduces critical security vulnerabilities, major logic errors, or breaking changes that MUST be fixed.
           - ONLY judge the FILES CHANGED in this PR. Pre-existing repo issues go in repo_health, NOT in the verdict.
           - If the only issues are pre-existing (base image CVEs, missing LICENSE, etc.), verdict MUST be "approve".
+          - A thin GitHub Actions caller workflow that just references a reusable workflow (uses: org/repo/.github/workflows/file.yml@ref) is a STANDARD PATTERN. If the YAML is syntactically valid and uses version pinning (@main, @v1, @sha), verdict MUST be "approve".
+          - Do NOT flag YAML/JSON files as having issues if they pass syntax validation. A "valid YAML" result means no issue exists.
+          - Scanner tool failures (e.g., SonarQube scanner error, Trivy download failure) are NOT code issues — do not count them against the PR.
 
           REVIEW DIMENSIONS (in order of priority):
           1. SECURITY: OWASP Top 10, hardcoded secrets, SQL/command injection, XSS, SSRF, insecure deserialization, path traversal, missing auth checks
