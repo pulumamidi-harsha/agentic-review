@@ -24,9 +24,6 @@ on:
       ARTIFACTORY_AUTH_TOKEN:
         description: 'Bayer Artifactory auth token (for private npm packages)'
         required: false
-      SONAR_TOKEN:
-        description: 'SonarQube token (optional - enables SonarQube analysis)'
-        required: false
 
 permissions:
   contents: read
@@ -1123,7 +1120,6 @@ jobs:
         id: sonarqube
         continue-on-error: true
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           GH_TOKEN: ${{ secrets.ORG_PAT }}
         run: |
           set +e
@@ -1263,83 +1259,7 @@ jobs:
               fi
             else
               echo "  ℹ No SonarQube statuses found either"
-
-              # 3. Final fallback: Try SonarQube API directly (only if host is reachable)
-              if [[ -n "$SONAR_TOKEN" ]]; then
-                SONAR_HOST_URL=""
-                if [[ -f "sonar-project.properties" ]]; then
-                  SONAR_HOST_URL=$(grep "^sonar.host.url=" sonar-project.properties 2>/dev/null | cut -d'=' -f2-)
-                fi
-                if [[ -z "$SONAR_HOST_URL" ]]; then
-                  SONAR_HOST_URL="https://sonarqube.bayer.com"
-                fi
-
-                SONAR_DOMAIN=$(echo "$SONAR_HOST_URL" | sed 's|https\?://||' | cut -d'/' -f1)
-                if getent hosts "$SONAR_DOMAIN" &>/dev/null 2>&1 || nslookup "$SONAR_DOMAIN" &>/dev/null 2>&1; then
-                  echo "  ✓ SonarQube host reachable, trying direct API..."
-
-                  SONAR_PROJECT_KEY=""
-                  if [[ -f "sonar-project.properties" ]]; then
-                    SONAR_PROJECT_KEY=$(grep "^sonar.projectKey=" sonar-project.properties 2>/dev/null | cut -d'=' -f2)
-                  fi
-                  if [[ -z "$SONAR_PROJECT_KEY" ]]; then
-                    SONAR_PROJECT_KEY="${{ github.repository_owner }}_${{ github.event.repository.name }}"
-                  fi
-
-                  # Try quality gate status
-                  QG_RESPONSE=$(curl -sS -u "${SONAR_TOKEN}:" \
-                    "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}" \
-                    2>/dev/null)
-
-                  if echo "$QG_RESPONSE" | jq -e '.projectStatus' &>/dev/null; then
-                    QG_STATUS=$(echo "$QG_RESPONSE" | jq -r '.projectStatus.status')
-                    echo "  Quality Gate: ${QG_STATUS}"
-
-                    if [[ "$QG_STATUS" == "OK" ]]; then
-                      SONAR_RESULTS="### 📊 SonarQube Quality Gate — ✅ PASSED"$'\n\n'
-                    elif [[ "$QG_STATUS" == "ERROR" ]]; then
-                      SONAR_RESULTS="### 📊 SonarQube Quality Gate — ❌ FAILED"$'\n\n'
-                      # Get conditions
-                      CONDITIONS=$(echo "$QG_RESPONSE" | jq -r '.projectStatus.conditions[]? | select(.status == "ERROR") | "- \(.metricKey): \(.actualValue) (threshold: \(.errorThreshold))"')
-                      if [[ -n "$CONDITIONS" ]]; then
-                        SONAR_RESULTS+="**Failed conditions:**"$'\n'
-                        SONAR_RESULTS+="${CONDITIONS}"$'\n\n'
-                      fi
-                    else
-                      SONAR_RESULTS="### 📊 SonarQube Quality Gate — ⚠️ ${QG_STATUS}"$'\n\n'
-                    fi
-
-                    SONAR_RESULTS+="🔗 [View in SonarQube](${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER})"$'\n\n'
-                  fi
-
-                  # Fetch issues
-                  ISSUES_RESPONSE=$(curl -sS -u "${SONAR_TOKEN}:" \
-                    "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}&statuses=OPEN&types=BUG,VULNERABILITY,CODE_SMELL&ps=20" \
-                    2>/dev/null)
-
-                  if echo "$ISSUES_RESPONSE" | jq -e '.issues' &>/dev/null; then
-                    TOTAL_ISSUES=$(echo "$ISSUES_RESPONSE" | jq '.total // 0')
-                    if [[ "$TOTAL_ISSUES" -gt 0 ]]; then
-                      BUGS=$(echo "$ISSUES_RESPONSE" | jq '[.issues[] | select(.type == "BUG")] | length')
-                      VULNS=$(echo "$ISSUES_RESPONSE" | jq '[.issues[] | select(.type == "VULNERABILITY")] | length')
-                      SMELLS=$(echo "$ISSUES_RESPONSE" | jq '[.issues[] | select(.type == "CODE_SMELL")] | length')
-                      SONAR_RESULTS+="**New issues:** ${TOTAL_ISSUES} (🐛 ${BUGS} bugs, 🔓 ${VULNS} vulnerabilities, 🔧 ${SMELLS} code smells)"$'\n\n'
-
-                      SONAR_RESULTS+="| Severity | Type | Message | File |"$'\n'
-                      SONAR_RESULTS+="|----------|------|---------|------|"$'\n'
-                      while IFS= read -r issue_line; do
-                        SONAR_RESULTS+="$issue_line"$'\n'
-                      done < <(echo "$ISSUES_RESPONSE" | jq -r '.issues[:10][] | "| \(.severity) | \(.type) | \(.message[:80]) | `\(.component | split(":") | last):\(.line // "?")` |"')
-                      SONAR_RESULTS+=$'\n'
-                    else
-                      SONAR_RESULTS+="No new issues found on this PR."$'\n\n'
-                    fi
-                  fi
-                else
-                  echo "  ℹ SonarQube host not reachable from this runner — skipping direct API"
-                  echo "  ℹ If SonarQube runs as a separate job, its results will appear when complete"
-                fi
-              fi
+              echo "  ℹ SonarQube may not be configured for this repository, or the job hasn't run yet"
             fi
           fi
 
@@ -1376,14 +1296,22 @@ jobs:
           SYSTEM_PROMPT='You are a principal software engineer conducting a thorough pull request review. You have the PR diff, CI results, Docker/Trivy scan results, and security scan results.
 
           VERDICT RULES (CRITICAL - follow exactly):
-          - "approve": PR changes are clean, no issues found in the changed files. Use this even if repo has pre-existing issues.
+          - "approve": PR changes are clean, no issues found in the changed files, AND SonarQube Quality Gate passed (or no SonarQube results available).
           - "needs_work": PR has minor/medium issues that should be fixed (non-blocking suggestions, style issues, minor bugs).
-          - "reject": PR introduces critical security vulnerabilities, major logic errors, or breaking changes that MUST be fixed.
+          - "reject": PR introduces critical security vulnerabilities, major logic errors, breaking changes, OR SonarQube Quality Gate FAILED due to issues in the PR changes.
           - ONLY judge the FILES CHANGED in this PR. Pre-existing repo issues go in repo_health, NOT in the verdict.
           - If the only issues are pre-existing (base image CVEs, missing LICENSE, etc.), verdict MUST be "approve".
           - A thin GitHub Actions caller workflow that just references a reusable workflow (uses: org/repo/.github/workflows/file.yml@ref) is a STANDARD PATTERN. If the YAML is syntactically valid and uses version pinning (@main, @v1, @sha), verdict MUST be "approve".
           - Do NOT flag YAML/JSON files as having issues if they pass syntax validation. A "valid YAML" result means no issue exists.
-          - Scanner tool failures (e.g., SonarQube scanner error, Trivy download failure) are NOT code issues — do not count them against the PR.
+          - Scanner tool failures (e.g., Trivy download failure) are NOT code issues — do not count them against the PR.
+
+          SONARQUBE RULES (CRITICAL):
+          - If SonarQube Quality Gate FAILED → verdict MUST be "reject". Explain why in the summary (e.g., security hotspot, coverage threshold, code smells).
+          - If SonarQube Quality Gate PASSED → factor positively into verdict.
+          - If SonarQube results show "In Progress" or "Pending" → note it in summary but do not penalize.
+          - If no SonarQube check run exists on this PR → note "SonarQube not configured" in summary, do not penalize.
+          - Always include SonarQube status prominently in your summary (first or second sentence).
+          - In the check_results_analysis field, explicitly state the SonarQube Quality Gate outcome and what caused it (e.g., "Quality Gate failed: 1 Security Hotspot").
 
           REVIEW DIMENSIONS (in order of priority):
           1. SECURITY: OWASP Top 10, hardcoded secrets, SQL/command injection, XSS, SSRF, insecure deserialization, path traversal, missing auth checks

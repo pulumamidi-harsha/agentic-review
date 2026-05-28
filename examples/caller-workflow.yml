@@ -10,7 +10,10 @@
 # Optional secrets:
 #   - ARTIFACTORY_USERNAME: Bayer Artifactory username (for private npm packages)
 #   - ARTIFACTORY_AUTH_TOKEN: Bayer Artifactory auth token
-#   - SONAR_TOKEN: SonarQube token (enables SonarQube analysis if provided)
+#
+# SonarQube Integration:
+#   If your repo has a SonarQube job, AI review automatically picks up its results
+#   via GitHub Checks API. No SONAR_TOKEN needed — just ensure SonarQube runs on PRs.
 # ────────────────────────────────────────────────────────────────────────────────
 name: AI PR Review
 
@@ -27,4 +30,3 @@ jobs:
       ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY }}
       ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
       ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
