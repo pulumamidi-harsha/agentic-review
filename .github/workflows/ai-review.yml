@@ -183,6 +183,12 @@ jobs:
             echo "node_version=" >> "$GITHUB_OUTPUT"
             echo "python_version=" >> "$GITHUB_OUTPUT"
             echo "go_version=" >> "$GITHUB_OUTPUT"
+            echo "ruby_version=" >> "$GITHUB_OUTPUT"
+            echo "java_version=" >> "$GITHUB_OUTPUT"
+            echo "dotnet_version=" >> "$GITHUB_OUTPUT"
+            echo "php_version=" >> "$GITHUB_OUTPUT"
+            echo "elixir_version=" >> "$GITHUB_OUTPUT"
+            echo "terraform_version=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -210,7 +216,7 @@ jobs:
              - Helm: read Chart.yaml → helm lint
 
           Return ONLY valid JSON (no markdown fences):
-          {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":null,"python_version":null,"go_version":null,"ruby_version":null}}'
+          {"stack":{"language":"...","framework":"...","package_manager":"...","package_manager_version":"...","runtime":"..."},"setup_commands":[{"cmd":"...","purpose":"..."}],"check_commands":[{"cmd":"...","purpose":"...","confidence":"high|medium|low"}],"runtime_requirements":{"node_version":null,"python_version":null,"go_version":null,"ruby_version":null,"java_version":null,"dotnet_version":null,"php_version":null,"elixir_version":null,"terraform_version":null}}'
 
           FILE_TREE=$(cat /tmp/file-tree.txt)
           CONFIG_FILES=$(cat /tmp/config-files.txt)
@@ -273,9 +279,21 @@ jobs:
           NODE_VER=$(jq -r '.runtime_requirements.node_version // empty' /tmp/ai-commands.json 2>/dev/null)
           PYTHON_VER=$(jq -r '.runtime_requirements.python_version // empty' /tmp/ai-commands.json 2>/dev/null)
           GO_VER=$(jq -r '.runtime_requirements.go_version // empty' /tmp/ai-commands.json 2>/dev/null)
+          RUBY_VER=$(jq -r '.runtime_requirements.ruby_version // empty' /tmp/ai-commands.json 2>/dev/null)
+          JAVA_VER=$(jq -r '.runtime_requirements.java_version // empty' /tmp/ai-commands.json 2>/dev/null)
+          DOTNET_VER=$(jq -r '.runtime_requirements.dotnet_version // empty' /tmp/ai-commands.json 2>/dev/null)
+          PHP_VER=$(jq -r '.runtime_requirements.php_version // empty' /tmp/ai-commands.json 2>/dev/null)
+          ELIXIR_VER=$(jq -r '.runtime_requirements.elixir_version // empty' /tmp/ai-commands.json 2>/dev/null)
+          TERRAFORM_VER=$(jq -r '.runtime_requirements.terraform_version // empty' /tmp/ai-commands.json 2>/dev/null)
           echo "node_version=${NODE_VER:-}" >> "$GITHUB_OUTPUT"
           echo "python_version=${PYTHON_VER:-}" >> "$GITHUB_OUTPUT"
           echo "go_version=${GO_VER:-}" >> "$GITHUB_OUTPUT"
+          echo "ruby_version=${RUBY_VER:-}" >> "$GITHUB_OUTPUT"
+          echo "java_version=${JAVA_VER:-}" >> "$GITHUB_OUTPUT"
+          echo "dotnet_version=${DOTNET_VER:-}" >> "$GITHUB_OUTPUT"
+          echo "php_version=${PHP_VER:-}" >> "$GITHUB_OUTPUT"
+          echo "elixir_version=${ELIXIR_VER:-}" >> "$GITHUB_OUTPUT"
+          echo "terraform_version=${TERRAFORM_VER:-}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node.js
         if: steps.pass1.outputs.node_version != ''
@@ -346,6 +364,46 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ steps.pass1.outputs.go_version }}
+
+      - name: Setup Ruby
+        if: steps.pass1.outputs.ruby_version != ''
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ steps.pass1.outputs.ruby_version }}
+          bundler-cache: true
+
+      - name: Setup Java
+        if: steps.pass1.outputs.java_version != ''
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ steps.pass1.outputs.java_version }}
+
+      - name: Setup .NET
+        if: steps.pass1.outputs.dotnet_version != ''
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ steps.pass1.outputs.dotnet_version }}
+
+      - name: Setup PHP
+        if: steps.pass1.outputs.php_version != ''
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ steps.pass1.outputs.php_version }}
+          tools: composer
+
+      - name: Setup Elixir
+        if: steps.pass1.outputs.elixir_version != ''
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ steps.pass1.outputs.elixir_version }}
+          otp-version: '26'
+
+      - name: Setup Terraform
+        if: steps.pass1.outputs.terraform_version != ''
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ steps.pass1.outputs.terraform_version }}
 
       - name: Run AI-determined checks
         if: steps.skip_check.outputs.skip != 'true' && steps.config.outputs.skip_checks != 'true'
@@ -833,6 +891,145 @@ jobs:
           fi
 
           echo ""
+
+          # ─────────────────────────────────────────────────────────
+          # SCAN 7: YAML/JSON/XML Syntax Validation
+          # ─────────────────────────────────────────────────────────
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  SCAN 7: YAML/JSON/XML Syntax Validation             │"
+          echo "└─────────────────────────────────────────────────────┘"
+
+          SYNTAX_ERRORS=""
+          SYNTAX_COUNT=0
+
+          # Get list of changed files from the PR diff
+          CHANGED_FILES=$(grep "^diff --git" /tmp/pr-diff.txt 2>/dev/null | sed 's|diff --git a/||;s| b/.*||' || true)
+
+          # Validate YAML files
+          YAML_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(yml|yaml)$' || true)
+          if [[ -n "$YAML_FILES" ]]; then
+            echo "  Checking YAML files..."
+            while IFS= read -r yf; do
+              [[ -z "$yf" ]] && continue
+              [[ ! -f "$yf" ]] && continue
+              ERR=$(python3 -c "
+          import yaml, sys
+          try:
+              with open('$yf') as f:
+                  yaml.safe_load(f)
+          except yaml.YAMLError as e:
+              print(str(e)[:200])
+              sys.exit(1)
+          " 2>&1)
+              if [[ $? -ne 0 ]]; then
+                echo "    ❌ $yf — INVALID YAML"
+                SYNTAX_ERRORS+="- \`$yf\` — INVALID YAML: ${ERR}"$'\n'
+                SYNTAX_COUNT=$((SYNTAX_COUNT + 1))
+                SECURITY_EXIT=1
+              else
+                echo "    ✅ $yf — valid"
+              fi
+            done <<< "$YAML_FILES"
+          fi
+
+          # Validate JSON files
+          JSON_FILES=$(echo "$CHANGED_FILES" | grep -E '\.json$' || true)
+          if [[ -n "$JSON_FILES" ]]; then
+            echo "  Checking JSON files..."
+            while IFS= read -r jf; do
+              [[ -z "$jf" ]] && continue
+              [[ ! -f "$jf" ]] && continue
+              ERR=$(python3 -c "
+          import json, sys
+          try:
+              with open('$jf') as f:
+                  json.load(f)
+          except (json.JSONDecodeError, ValueError) as e:
+              print(str(e)[:200])
+              sys.exit(1)
+          " 2>&1)
+              if [[ $? -ne 0 ]]; then
+                echo "    ❌ $jf — INVALID JSON"
+                SYNTAX_ERRORS+="- \`$jf\` — INVALID JSON: ${ERR}"$'\n'
+                SYNTAX_COUNT=$((SYNTAX_COUNT + 1))
+                SECURITY_EXIT=1
+              else
+                echo "    ✅ $jf — valid"
+              fi
+            done <<< "$JSON_FILES"
+          fi
+
+          # Validate XML files
+          XML_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(xml|pom|csproj|props|targets)$' || true)
+          if [[ -n "$XML_FILES" ]]; then
+            echo "  Checking XML files..."
+            while IFS= read -r xf; do
+              [[ -z "$xf" ]] && continue
+              [[ ! -f "$xf" ]] && continue
+              ERR=$(python3 -c "
+          import xml.etree.ElementTree as ET, sys
+          try:
+              ET.parse('$xf')
+          except ET.ParseError as e:
+              print(str(e)[:200])
+              sys.exit(1)
+          " 2>&1)
+              if [[ $? -ne 0 ]]; then
+                echo "    ❌ $xf — INVALID XML"
+                SYNTAX_ERRORS+="- \`$xf\` — INVALID XML: ${ERR}"$'\n'
+                SYNTAX_COUNT=$((SYNTAX_COUNT + 1))
+                SECURITY_EXIT=1
+              else
+                echo "    ✅ $xf — valid"
+              fi
+            done <<< "$XML_FILES"
+          fi
+
+          # GitHub Actions workflow validation (check for common issues)
+          GHA_FILES=$(echo "$CHANGED_FILES" | grep -E '^\.github/workflows/.*\.(yml|yaml)$' || true)
+          if [[ -n "$GHA_FILES" ]]; then
+            echo "  Checking GitHub Actions workflows for common issues..."
+            while IFS= read -r gf; do
+              [[ -z "$gf" ]] && continue
+              [[ ! -f "$gf" ]] && continue
+              GHA_ISSUES=""
+              # Check: must have 'on' trigger
+              if ! grep -q "^on:" "$gf" && ! grep -q "^'on':" "$gf" && ! grep -q '^"on":' "$gf"; then
+                GHA_ISSUES+="missing 'on' trigger; "
+              fi
+              # Check: must have 'jobs' section
+              if ! grep -q "^jobs:" "$gf"; then
+                GHA_ISSUES+="missing 'jobs' section; "
+              fi
+              # Check: uses references should have version pinning
+              UNPINNED=$(grep -n "uses:" "$gf" | grep -v "@" | grep -v "#" || true)
+              if [[ -n "$UNPINNED" ]]; then
+                GHA_ISSUES+="unpinned action references (missing @version); "
+              fi
+              if [[ -n "$GHA_ISSUES" ]]; then
+                echo "    ⚠️  $gf — ${GHA_ISSUES}"
+                SYNTAX_ERRORS+="- \`$gf\` — GHA issues: ${GHA_ISSUES}"$'\n'
+                SYNTAX_COUNT=$((SYNTAX_COUNT + 1))
+              else
+                echo "    ✅ $gf — valid workflow structure"
+              fi
+            done <<< "$GHA_FILES"
+          fi
+
+          if [[ $SYNTAX_COUNT -gt 0 ]]; then
+            echo ""
+            echo "  ⚠ Found ${SYNTAX_COUNT} syntax/validation issues"
+            SECURITY_RESULTS+="### YAML/JSON/XML Validation -- ⚠ ${SYNTAX_COUNT} issues found"$'\n'
+            SECURITY_RESULTS+="${SYNTAX_ERRORS}"$'\n'
+          elif [[ -n "$YAML_FILES" || -n "$JSON_FILES" || -n "$XML_FILES" || -n "$GHA_FILES" ]]; then
+            echo "  ✅ All checked files have valid syntax"
+            SECURITY_RESULTS+="### YAML/JSON/XML Validation -- ✅ All valid"$'\n\n'
+          else
+            echo "  ℹ No YAML/JSON/XML files changed in this PR"
+            SECURITY_RESULTS+="### YAML/JSON/XML Validation -- ℹ No files to check"$'\n\n'
+          fi
+
+          echo ""
           echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
           echo "┃          SECURITY SCANS COMPLETE                      ┃"
           echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
@@ -923,6 +1120,11 @@ jobs:
 
           SYSTEM_PROMPT='You are a principal software engineer conducting a thorough pull request review. You have the PR diff, CI results, Docker/Trivy scan results, and security scan results.
 
+          CRITICAL: Your verdict (approve/request_changes/comment) must be based ONLY on the files changed in this PR.
+          - If the PR itself is clean and well-written, verdict should be "approve" even if the repository has pre-existing issues.
+          - Pre-existing issues (base image vulnerabilities, missing LICENSE, etc.) should NEVER cause "request_changes" unless the PR introduced or worsened them.
+          - Only use "request_changes" if the PR code itself has security vulnerabilities, logic errors, or critical issues.
+
           REVIEW DIMENSIONS (in order of priority):
           1. SECURITY: OWASP Top 10, hardcoded secrets, SQL/command injection, XSS, SSRF, insecure deserialization, path traversal, missing auth checks
           2. RELIABILITY: Null/undefined handling, error handling, race conditions, resource leaks, infinite loops
@@ -934,15 +1136,15 @@ jobs:
 
           GUIDELINES:
           - Be specific: reference exact file paths and line numbers from the diff
-          - Distinguish between: a) new issues introduced by this PR, b) pre-existing issues touched by this PR
+          - CLEARLY separate: a) issues in the PR changes, b) pre-existing repository issues
           - If dependency install failed, note that check failures may not reflect actual code issues
-          - If Trivy found vulnerabilities, flag them as security issues with severity
-          - If gitleaks found secrets, flag as CRITICAL security issues
+          - If Trivy found vulnerabilities in base images (not introduced by this PR), note them in repo_health but do NOT mark as PR issues
+          - If gitleaks found secrets IN THE PR DIFF, flag as CRITICAL. If secrets are pre-existing, note in repo_health.
           - Provide actionable fix suggestions, not just descriptions
           - Be constructive: acknowledge good patterns and improvements
 
           Return ONLY valid JSON (no markdown fences):
-          {"summary":"2-3 sentence summary of PR quality and risk","verdict":"approve|request_changes|comment","confidence":0.85,"check_results_analysis":"what CI results mean for this PR","security_analysis":"summary of security scan findings","issues":[{"severity":"critical|high|medium|low|info","file":"path","line":0,"title":"...","description":"...","suggestion":"fix code snippet or approach"}],"positives":["things done well"],"suggestions":["non-blocking improvements"]}'
+          {"summary":"2-3 sentence summary of PR quality","verdict":"approve|request_changes|comment","confidence":0.85,"check_results_analysis":"what CI results mean for this PR","security_analysis":"summary of security scan findings for PR changes","repo_health":{"status":"healthy|needs_attention|critical","summary":"2-3 sentence overall repository health assessment","issues":["pre-existing issue 1","pre-existing issue 2"],"recommendations":["actionable recommendation 1"]},"issues":[{"severity":"critical|high|medium|low|info","file":"path","line":0,"title":"...","description":"...","suggestion":"fix code snippet or approach","is_pr_change":true}],"positives":["things done well"],"suggestions":["non-blocking improvements"]}'
 
           PR_DIFF=$(cat /tmp/pr-diff.txt 2>/dev/null || echo "")
           CHECK_RESULTS=$(cat /tmp/check-results.txt 2>/dev/null || echo "No checks were run")
@@ -1051,7 +1253,7 @@ jobs:
               : 'Unknown';
 
             const cmdList = (commands.check_commands || [])
-              .map(c => `| \`${c.cmd}\` | ${c.purpose} | ${c.confidence} |`)
+              .map((c, i) => `${i+1}. \`${c.cmd}\`\n   - **Purpose:** ${c.purpose}\n   - **Confidence:** ${c.confidence}`)
               .join('\n');
 
             const verdictEmoji = { approve: '\u2705', request_changes: '\ud83d\udd34', comment: '\ud83d\udcac' }[reviewData.verdict] || '\ud83d\udcac';
@@ -1065,6 +1267,18 @@ jobs:
 
             const positives = (reviewData.positives || []).map(p => `- ${p}`).join('\n');
             const suggestions = (reviewData.suggestions || []).map(s => `- ${s}`).join('\n');
+
+            // Repository Health section (pre-existing issues, not PR-specific)
+            const repoHealth = reviewData.repo_health || {};
+            const healthEmoji = { healthy: '\u2705', needs_attention: '\u26a0\ufe0f', critical: '\ud83d\udea8' }[repoHealth.status] || '\u2139\ufe0f';
+            const repoHealthSection = repoHealth.summary ? [
+              `### \ud83c\udfe5 Repository Health \u2014 ${healthEmoji} ${(repoHealth.status || 'unknown').replace('_', ' ').toUpperCase()}`,
+              '',
+              `> ${repoHealth.summary}`,
+              '',
+              (repoHealth.issues || []).length > 0 ? '**Pre-existing issues (not introduced by this PR):**\n' + repoHealth.issues.map(i => `- ${i}`).join('\n') + '\n' : '',
+              (repoHealth.recommendations || []).length > 0 ? '**Recommendations:**\n' + repoHealth.recommendations.map(r => `- ${r}`).join('\n') + '\n' : '',
+            ].filter(Boolean).join('\n') : '';
 
             // PR size warning
             const sizeWarning = prSize === 'very_large'
@@ -1088,11 +1302,11 @@ jobs:
               positives ? `### \u2705 What\u2019s Good\n\n${positives}\n` : '',
               suggestions ? `### \ud83d\udca1 Suggestions\n\n${suggestions}\n` : '',
               '',
+              repoHealthSection,
+              '',
               '<details><summary>\ud83d\udccb Commands AI decided to run</summary>',
               '',
-              '| Command | Purpose | Confidence |',
-              '|---------|---------|------------|',
-              cmdList || '| _None generated_ | | |',
+              cmdList || '_None generated_',
               '',
               '</details>',
               '',
