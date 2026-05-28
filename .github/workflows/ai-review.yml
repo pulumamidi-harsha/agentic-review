@@ -1192,20 +1192,35 @@ jobs:
           fi
           echo "  SonarQube host: ${SONAR_HOST_URL}"
 
+          # Detect sources directory
+          SONAR_SOURCES="."
+          if [[ -d "src" ]]; then
+            SONAR_SOURCES="src"
+          fi
+
           # Run sonar-scanner
-          echo "  Running sonar-scanner (PR analysis mode)..."
+          echo "  Running sonar-scanner (PR analysis mode, sources=$SONAR_SOURCES)..."
           SONAR_OUTPUT=$("$SONAR_SCANNER" \
             -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
             -Dsonar.host.url="$SONAR_HOST_URL" \
             -Dsonar.token="$SONAR_TOKEN" \
+            -Dsonar.sources="$SONAR_SOURCES" \
             -Dsonar.pullrequest.key="${{ github.event.pull_request.number }}" \
             -Dsonar.pullrequest.branch="${{ github.head_ref }}" \
             -Dsonar.pullrequest.base="${{ github.base_ref }}" \
             -Dsonar.qualitygate.wait=true \
             -Dsonar.qualitygate.timeout=120 \
+            -Dsonar.scanner.skipJreProvisioning=false \
             2>&1) && SONAR_EXIT=0 || SONAR_EXIT=$?
 
           echo "  Scanner exit code: $SONAR_EXIT"
+
+          # Always show last ERROR lines in log for debugging
+          if [[ $SONAR_EXIT -ne 0 ]]; then
+            echo "  --- Scanner error output (last 30 lines) ---"
+            echo "$SONAR_OUTPUT" | grep -E "ERROR|WARN|Exception|failure|failed" | tail -30
+            echo "  --- End scanner output ---"
+          fi
 
           if [[ $SONAR_EXIT -ne 0 ]]; then
             # Check if it's a quality gate failure vs scanner failure
