@@ -5,10 +5,12 @@
 # Required secrets (set at org or repo level):
 #   - AI_API_KEY: MGA/OpenAI API key
 #   - AI_API_ENDPOINT: LLM endpoint URL
+#   - ORG_PAT: Org-level PAT with repo read access
 #
-# Optional secrets (for Bayer private npm packages):
-#   - ARTIFACTORY_USERNAME: Bayer Artifactory username
+# Optional secrets:
+#   - ARTIFACTORY_USERNAME: Bayer Artifactory username (for private npm packages)
 #   - ARTIFACTORY_AUTH_TOKEN: Bayer Artifactory auth token
+#   - SONAR_TOKEN: SonarQube token (enables SonarQube analysis if provided)
 # ────────────────────────────────────────────────────────────────────────────────
 name: AI PR Review
 
@@ -25,3 +27,4 @@ jobs:
       ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY }}
       ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
       ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

@@ -212,8 +212,10 @@ Go to **Settings → Secrets and variables → Actions** and add:
 |--------|----------|-------------|
 | `AI_API_KEY` | Yes | API key for the LLM service |
 | `AI_API_ENDPOINT` | Yes | Chat completions endpoint URL |
+| `ORG_PAT` | Yes | Org-level PAT with repo read access |
 | `ARTIFACTORY_USERNAME` | No | For private npm packages (Node.js repos only) |
 | `ARTIFACTORY_AUTH_TOKEN` | No | For private npm packages (Node.js repos only) |
+| `SONAR_TOKEN` | No | Enables SonarQube analysis (quality gate + issues) |
 
 ### 2. Add the Caller Workflow to Your Repository
 
@@ -228,16 +230,17 @@ on:
 
 jobs:
   ai-review:
-    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
+    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@main
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
       ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY }}
       ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
       ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 ```
 
-That's it. **5 lines of YAML.** All logic lives in this centralized repo.
+That's it. All logic lives in this centralized repo.
 
 ### 3. Open a PR
 
@@ -249,28 +252,48 @@ The pipeline triggers automatically. Within ~2 minutes you'll see a review comme
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│  🤖 AI Code Review — ✅ APPROVE                                     │
+│  🤖 AI Code Review — ✅ APPROVED                                    │
 │                                                                    │
 │  > This PR adds input validation to the API endpoints.             │
+│  > Clean changes with no security or reliability issues.           │
 │                                                                    │
-│  | Stack              | Checks          | Confidence |             │
-│  |--------------------|-----------------|------------|             │
-│  | Python / FastAPI / pip | ✅ 3 passed, 0 failed | 92%       |   │
+│  | Stack | Checks | Security | Confidence | Duration |             │
+│  |-------|--------|----------|------------|----------|             │
+│  | Python / FastAPI / pip | ✅ 3 passed | ✅ | 92% | 1m 45s |    │
+│                                                                    │
+│  ### 🏥 Repository Health — ⚠️ NEEDS ATTENTION                     │
+│  > Repo has 9 base image CVEs and missing LICENSE file.            │
+│  Pre-existing issues (not introduced by this PR):                  │
+│  - Debian 13.5 base image has HIGH/CRITICAL vulnerabilities       │
+│  - Missing LICENSE file                                            │
 │                                                                    │
 │  ### CI Analysis                                                   │
 │  All linting, type checking, and tests pass cleanly.               │
 │                                                                    │
-│  ### What's Good                                                   │
+│  ### ✅ What's Good                                                 │
 │  - Input validation using Pydantic models                          │
 │  - Comprehensive test coverage for edge cases                      │
 │                                                                    │
-│  ### Suggestions                                                   │
+│  ### 💡 Suggestions                                                 │
 │  - Consider adding rate limiting to the new endpoint               │
 │                                                                    │
 │  📋 Commands AI decided to run (expandable)                        │
 │  📊 Full Check Output (expandable)                                 │
+│  🐳 Docker Build & Trivy Scan (expandable)                         │
+│  🔒 Security & File Hygiene Scans (expandable)                     │
+│  📦 Dependency Vulnerability Audit (expandable)                    │
 └────────────────────────────────────────────────────────────────────┘
 ```
+
+### Verdict Levels
+
+| Verdict | Meaning |
+|---------|---------|
+| ✅ **APPROVED** | PR changes are clean — no issues in the files you changed |
+| ⚠️ **NEEDS WORK** | PR has minor/medium issues worth fixing (style, minor bugs) |
+| 🔴 **CHANGES REQUIRED** | PR introduces critical security or logic issues that must be fixed |
+
+> **Important:** The verdict is based ONLY on the files changed in the PR. Pre-existing repository issues (base image CVEs, missing LICENSE, etc.) appear in the "Repository Health" section but never affect the verdict.
 
 ---
 
@@ -289,9 +312,88 @@ This workflow works for **any** tech stack. The AI adapts to whatever it finds i
 | **PHP** | `composer.json`, `phpstan.neon` | `composer install`, `vendor/bin/phpstan`, `vendor/bin/phpunit` |
 | **Java / Kotlin** | `pom.xml`, `build.gradle` | `mvn verify`, `gradle check`, `gradle test` |
 | **C# / .NET** | `*.csproj`, `*.sln` | `dotnet build`, `dotnet test` |
-| **Terraform** | `*.tf` | `terraform fmt -check`, `terraform validate`, `tflint` |
-| **Helm** | `Chart.yaml` | `helm lint` |
-| **Monorepos** | `nx.json`, `turbo.json`, `pnpm-workspace.yaml` | Monorepo-aware commands |
+| **Terraform** | `*.tf` | `terraform fmt -check`, `terraform init -backend=false && terraform validate`, `tflint` |
+| **Helm** | `Chart.yaml` | `helm lint`, `helm template` |
+| **CloudFormation** | `templates/*.yaml`, `cfn/` | `cfn-lint` |
+| **Ansible** | `ansible.cfg`, `playbooks/` | `ansible-lint` |
+| **Kubernetes** | `k8s/`, `manifests/` | `kubeval`, `kubeconform` |
+| **Monorepos** | Multiple config files in subdirs | Per-directory commands (see below) |
+
+---
+
+## Monorepo & Multi-Stack Support
+
+The pipeline automatically handles repositories with **multiple tech stacks** in different directories. No extra configuration needed.
+
+### How It Works
+
+The AI analyzes the full file tree and detects all stacks present. For each stack, it generates commands prefixed with `cd <directory> &&` so they run in the correct context.
+
+### Example: Monorepo with Frontend + Backend + Infrastructure
+
+```
+my-repo/
+├── frontend/          ← React/TypeScript
+│   ├── package.json
+│   └── tsconfig.json
+├── backend/           ← Python/FastAPI
+│   ├── pyproject.toml
+│   └── requirements.txt
+└── infra/             ← Terraform
+    ├── main.tf
+    └── variables.tf
+```
+
+The pipeline detects 3 stacks and runs:
+```
+# Frontend checks
+cd frontend && pnpm install
+cd frontend && pnpm run lint
+cd frontend && pnpm run typecheck
+cd frontend && pnpm run test
+
+# Backend checks
+cd backend && pip install -r requirements.txt
+cd backend && ruff check .
+cd backend && pytest
+
+# Infrastructure checks
+cd infra && terraform fmt -check
+cd infra && terraform init -backend=false && terraform validate
+```
+
+All runtimes (Node.js + Python + Terraform) are set up simultaneously.
+
+### PR Comment for Monorepos
+
+The comment shows all detected stacks:
+```
+| Stack | Checks | Security | Confidence | Duration |
+|-------|--------|----------|------------|----------|
+| TypeScript / React / pnpm | ✅ 8 passed, 0 failed | ✅ | 90% | 2m 15s |
+
+Detected Stacks:
+- TypeScript / React (`frontend`)
+- Python / FastAPI (`backend`)
+- Terraform (`infra`)
+```
+
+---
+
+## Infrastructure-as-Code (IaC) Checks
+
+For repositories with only infrastructure code (or an `infra/` subdirectory), the pipeline runs IaC-specific validation:
+
+| Tool | What It Checks |
+|------|----------------|
+| `terraform fmt -check` | Formatting consistency |
+| `terraform init -backend=false && terraform validate` | HCL syntax and resource validation |
+| `tflint` | Best practices, deprecated syntax, provider-specific rules |
+| `helm lint` | Chart structure, values validation |
+| `helm template` | Template rendering without errors |
+| `cfn-lint` | CloudFormation template validation |
+| `ansible-lint` | Ansible playbook best practices |
+| `kubeval` / `kubeconform` | Kubernetes manifest schema validation |
 
 ---
 
@@ -432,10 +534,12 @@ Set `AI_API_ENDPOINT` to your provider's URL. The model used is `gpt-4.1`.
 agentic-review/
 ├── .github/
 │   └── workflows/
-│       └── ai-review.yml       ← The reusable workflow (all logic lives here)
-├── README.md                   ← This file
+│       └── ai-review.yml            ← The reusable workflow (all logic lives here)
+├── .gitleaks.toml                    ← Gitleaks false-positive exclusions
+├── README.md                         ← This file
 └── examples/
-    └── caller-workflow.yml     ← Copy this to your repo
+    ├── caller-workflow.yml           ← Copy this to your repo
+    └── .agentic-review.yml           ← Optional per-repo config template
 ```
 
 ---
@@ -499,6 +603,47 @@ The pipeline automatically runs dependency vulnerability checks based on your st
 | **Python** | `pip-audit` (auto-installed) |
 
 Results appear in the PR comment as a collapsible "Dependency Vulnerability Audit" section and are fed to the AI for analysis.
+
+---
+
+## SonarQube Integration (Optional)
+
+If you pass `SONAR_TOKEN` in the caller workflow, the pipeline runs SonarQube analysis in **PR analysis mode**:
+
+### What It Does
+
+1. **Installs** sonar-scanner CLI automatically
+2. **Detects** project configuration from `sonar-project.properties` (if present) or derives from repo name
+3. **Runs** analysis with `sonar.qualitygate.wait=true`
+4. **Fetches** new issues via SonarQube API (bugs, vulnerabilities, code smells)
+5. **Reports** quality gate status + issue details in the PR comment
+6. **Feeds** results to the AI reviewer for context
+
+### How to Enable
+
+Add `SONAR_TOKEN` secret to your repo and pass it in the caller workflow:
+
+```yaml
+    secrets:
+      AI_API_KEY: ${{ secrets.AI_API_KEY }}
+      AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+      ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}  # ← enables SonarQube
+```
+
+### What If SONAR_TOKEN Is Not Provided?
+
+The SonarQube step is **completely skipped**. No error, no warning — it simply doesn't run. This makes it fully backward-compatible.
+
+### SonarQube Configuration
+
+| Scenario | Behavior |
+|----------|----------|
+| `sonar-project.properties` exists | Uses project key and host URL from file |
+| No properties file | Derives key from `{owner}_{repo}`, uses `https://sonarqube.bayer.com` |
+| Quality gate passes | Reports ✅ PASSED in PR comment |
+| Quality gate fails | Reports ⚠ FAILED with gate conditions |
+| Scanner error | Reports error output, does not fail the pipeline |
 
 ---
 

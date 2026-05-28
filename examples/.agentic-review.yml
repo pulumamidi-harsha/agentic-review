@@ -16,3 +16,10 @@ skip_checks: false
 
 # Maximum diff lines to send to AI (larger = better context but slower)
 max_diff_lines: 15000
+
+# ─────────────────────────────────────────────────────────────────────
+# SonarQube Integration (optional)
+# ─────────────────────────────────────────────────────────────────────
+# To enable SonarQube, pass SONAR_TOKEN in the caller workflow.
+# The pipeline auto-detects sonar-project.properties if present.
+# If not present, it derives the project key from the repo name.

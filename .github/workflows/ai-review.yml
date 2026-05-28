@@ -24,6 +24,9 @@ on:
       ARTIFACTORY_AUTH_TOKEN:
         description: 'Bayer Artifactory auth token (for private npm packages)'
         required: false
+      SONAR_TOKEN:
+        description: 'SonarQube token (optional - enables SonarQube analysis)'
+        required: false
 
 permissions:
   contents: read
@@ -1115,6 +1118,131 @@ jobs:
 
           echo "$AUDIT_RESULTS" > /tmp/audit-results.txt
 
+      - name: "SonarQube Analysis (Optional)"
+        if: steps.skip_check.outputs.skip != 'true' && env.SONAR_TOKEN != ''
+        id: sonarqube
+        continue-on-error: true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          set +e
+          echo ""
+          echo "┌─────────────────────────────────────────────────────┐"
+          echo "│  SonarQube Analysis                                  │"
+          echo "└─────────────────────────────────────────────────────┘"
+          echo ""
+
+          SONAR_RESULTS=""
+
+          # Install sonar-scanner
+          SONAR_SCANNER_VERSION="5.0.1.3006"
+          echo "  Installing sonar-scanner v${SONAR_SCANNER_VERSION}..."
+          curl -sSL "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux.zip" -o /tmp/sonar-scanner.zip 2>/dev/null
+          if [[ $? -ne 0 ]]; then
+            echo "  ⚠ Failed to download sonar-scanner"
+            echo "### SonarQube -- SKIPPED (download failed)" > /tmp/sonar-results.txt
+            exit 0
+          fi
+          unzip -q /tmp/sonar-scanner.zip -d /tmp/ 2>/dev/null
+          SONAR_SCANNER="/tmp/sonar-scanner-${SONAR_SCANNER_VERSION}-linux/bin/sonar-scanner"
+          chmod +x "$SONAR_SCANNER" 2>/dev/null
+
+          # Detect sonar project key from sonar-project.properties or derive from repo
+          SONAR_PROJECT_KEY=""
+          if [[ -f "sonar-project.properties" ]]; then
+            SONAR_PROJECT_KEY=$(grep "^sonar.projectKey=" sonar-project.properties 2>/dev/null | cut -d'=' -f2)
+            echo "  Found sonar-project.properties (key: ${SONAR_PROJECT_KEY})"
+          fi
+
+          if [[ -z "$SONAR_PROJECT_KEY" ]]; then
+            SONAR_PROJECT_KEY="${{ github.repository_owner }}_${{ github.event.repository.name }}"
+            echo "  Using derived project key: ${SONAR_PROJECT_KEY}"
+          fi
+
+          # Detect SonarQube host URL from sonar-project.properties or use Bayer default
+          SONAR_HOST_URL=""
+          if [[ -f "sonar-project.properties" ]]; then
+            SONAR_HOST_URL=$(grep "^sonar.host.url=" sonar-project.properties 2>/dev/null | cut -d'=' -f2-)
+          fi
+          if [[ -z "$SONAR_HOST_URL" ]]; then
+            SONAR_HOST_URL="https://sonarqube.bayer.com"
+          fi
+          echo "  SonarQube host: ${SONAR_HOST_URL}"
+
+          # Run sonar-scanner
+          echo "  Running sonar-scanner (PR analysis mode)..."
+          SONAR_OUTPUT=$("$SONAR_SCANNER" \
+            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+            -Dsonar.host.url="$SONAR_HOST_URL" \
+            -Dsonar.token="$SONAR_TOKEN" \
+            -Dsonar.pullrequest.key="${{ github.event.pull_request.number }}" \
+            -Dsonar.pullrequest.branch="${{ github.head_ref }}" \
+            -Dsonar.pullrequest.base="${{ github.base_ref }}" \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.qualitygate.timeout=120 \
+            2>&1) && SONAR_EXIT=0 || SONAR_EXIT=$?
+
+          if [[ $SONAR_EXIT -ne 0 ]]; then
+            # Check if it's a quality gate failure vs scanner failure
+            if echo "$SONAR_OUTPUT" | grep -q "QUALITY GATE STATUS: FAILED"; then
+              echo "  ⚠ Quality Gate FAILED"
+              SONAR_RESULTS="### SonarQube Quality Gate -- ⚠ FAILED"$'\n\n'
+
+              # Extract quality gate conditions
+              GATE_DETAILS=$(echo "$SONAR_OUTPUT" | grep -A 20 "QUALITY GATE STATUS" | head -25)
+              SONAR_RESULTS+='```'$'\n'
+              SONAR_RESULTS+="${GATE_DETAILS:0:3000}"$'\n'
+              SONAR_RESULTS+='```'$'\n\n'
+            else
+              echo "  ⚠ SonarQube scanner failed (may be misconfigured)"
+              SONAR_RESULTS="### SonarQube -- ⚠ Scanner Error"$'\n'
+              SONAR_RESULTS+='```'$'\n'
+              SONAR_RESULTS+="${SONAR_OUTPUT:(-2000)}"$'\n'
+              SONAR_RESULTS+='```'$'\n\n'
+            fi
+          else
+            if echo "$SONAR_OUTPUT" | grep -q "QUALITY GATE STATUS: PASSED"; then
+              echo "  ✅ Quality Gate PASSED"
+              SONAR_RESULTS="### SonarQube Quality Gate -- ✅ PASSED"$'\n\n'
+            else
+              echo "  ℹ Analysis complete (quality gate status unknown)"
+              SONAR_RESULTS="### SonarQube -- ℹ Analysis Complete"$'\n'
+              SONAR_RESULTS+="Quality gate status could not be determined."$'\n\n'
+            fi
+          fi
+
+          # Try to fetch issues via API (new issues on this PR)
+          echo "  Fetching PR issues from SonarQube API..."
+          ISSUES_RESPONSE=$(curl -sS -u "${SONAR_TOKEN}:" \
+            "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${{ github.event.pull_request.number }}&statuses=OPEN&types=BUG,VULNERABILITY,CODE_SMELL&ps=20" \
+            2>/dev/null)
+
+          if [[ $? -eq 0 ]] && echo "$ISSUES_RESPONSE" | jq -e '.issues' &>/dev/null; then
+            TOTAL_ISSUES=$(echo "$ISSUES_RESPONSE" | jq '.total // 0')
+            BUGS=$(echo "$ISSUES_RESPONSE" | jq '[.issues[] | select(.type == "BUG")] | length')
+            VULNS=$(echo "$ISSUES_RESPONSE" | jq '[.issues[] | select(.type == "VULNERABILITY")] | length')
+            SMELLS=$(echo "$ISSUES_RESPONSE" | jq '[.issues[] | select(.type == "CODE_SMELL")] | length')
+
+            if [[ "$TOTAL_ISSUES" -gt 0 ]]; then
+              SONAR_RESULTS+="**New issues on this PR:** ${TOTAL_ISSUES} (🐛 ${BUGS} bugs, 🔓 ${VULNS} vulnerabilities, 🔧 ${SMELLS} code smells)"$'\n\n'
+
+              # List top issues
+              SONAR_RESULTS+="| Severity | Type | Message | File |"$'\n'
+              SONAR_RESULTS+="|----------|------|---------|------|"$'\n'
+              while IFS= read -r issue_line; do
+                SONAR_RESULTS+="$issue_line"$'\n'
+              done < <(echo "$ISSUES_RESPONSE" | jq -r '.issues[:10][] | "| \(.severity) | \(.type) | \(.message[:80]) | `\(.component | split(":") | last):\(.line // "?")` |"')
+              SONAR_RESULTS+=$'\n'
+            else
+              SONAR_RESULTS+="No new issues found on this PR."$'\n\n'
+            fi
+          else
+            echo "  ℹ Could not fetch issues from API (may need additional permissions)"
+          fi
+
+          echo "$SONAR_RESULTS" > /tmp/sonar-results.txt
+          echo "sonar_exit=$SONAR_EXIT" >> "$GITHUB_OUTPUT"
+
       - name: "AI Pass 2: Review code and results"
         if: steps.skip_check.outputs.skip != 'true'
         id: pass2
@@ -1139,10 +1267,12 @@ jobs:
 
           SYSTEM_PROMPT='You are a principal software engineer conducting a thorough pull request review. You have the PR diff, CI results, Docker/Trivy scan results, and security scan results.
 
-          CRITICAL: Your verdict (approve/request_changes/comment) must be based ONLY on the files changed in this PR.
-          - If the PR itself is clean and well-written, verdict should be "approve" even if the repository has pre-existing issues.
-          - Pre-existing issues (base image vulnerabilities, missing LICENSE, etc.) should NEVER cause "request_changes" unless the PR introduced or worsened them.
-          - Only use "request_changes" if the PR code itself has security vulnerabilities, logic errors, or critical issues.
+          VERDICT RULES (CRITICAL - follow exactly):
+          - "approve": PR changes are clean, no issues found in the changed files. Use this even if repo has pre-existing issues.
+          - "needs_work": PR has minor/medium issues that should be fixed (non-blocking suggestions, style issues, minor bugs).
+          - "reject": PR introduces critical security vulnerabilities, major logic errors, or breaking changes that MUST be fixed.
+          - ONLY judge the FILES CHANGED in this PR. Pre-existing repo issues go in repo_health, NOT in the verdict.
+          - If the only issues are pre-existing (base image CVEs, missing LICENSE, etc.), verdict MUST be "approve".
 
           REVIEW DIMENSIONS (in order of priority):
           1. SECURITY: OWASP Top 10, hardcoded secrets, SQL/command injection, XSS, SSRF, insecure deserialization, path traversal, missing auth checks
@@ -1156,14 +1286,16 @@ jobs:
           GUIDELINES:
           - Be specific: reference exact file paths and line numbers from the diff
           - CLEARLY separate: a) issues in the PR changes, b) pre-existing repository issues
+          - If you mention an issue in the summary, you MUST include it in the issues array with full details
+          - Every issue must have: file, line (if applicable), title, description, and suggestion
           - If dependency install failed, note that check failures may not reflect actual code issues
           - If Trivy found vulnerabilities in base images (not introduced by this PR), note them in repo_health but do NOT mark as PR issues
           - If gitleaks found secrets IN THE PR DIFF, flag as CRITICAL. If secrets are pre-existing, note in repo_health.
-          - Provide actionable fix suggestions, not just descriptions
+          - Provide actionable fix suggestions with code snippets where possible
           - Be constructive: acknowledge good patterns and improvements
 
           Return ONLY valid JSON (no markdown fences):
-          {"summary":"2-3 sentence summary of PR quality","verdict":"approve|request_changes|comment","confidence":0.85,"check_results_analysis":"what CI results mean for this PR","security_analysis":"summary of security scan findings for PR changes","repo_health":{"status":"healthy|needs_attention|critical","summary":"2-3 sentence overall repository health assessment","issues":["pre-existing issue 1","pre-existing issue 2"],"recommendations":["actionable recommendation 1"]},"issues":[{"severity":"critical|high|medium|low|info","file":"path","line":0,"title":"...","description":"...","suggestion":"fix code snippet or approach","is_pr_change":true}],"positives":["things done well"],"suggestions":["non-blocking improvements"]}'
+          {"summary":"2-3 sentence summary of PR quality","verdict":"approve|needs_work|reject","confidence":0.85,"check_results_analysis":"what CI results mean for this PR","security_analysis":"summary of security scan findings for PR changes","repo_health":{"status":"healthy|needs_attention|critical","summary":"2-3 sentence overall repository health assessment","issues":["pre-existing issue 1 with specific details","pre-existing issue 2"],"recommendations":["actionable recommendation 1"]},"issues":[{"severity":"critical|high|medium|low|info","file":"path/to/file.ext","line":42,"title":"Short descriptive title","description":"Detailed explanation of the issue and why it matters","suggestion":"Specific fix: code snippet or clear approach","is_pr_change":true}],"positives":["things done well"],"suggestions":["non-blocking improvements"]}'
 
           PR_DIFF=$(cat /tmp/pr-diff.txt 2>/dev/null || echo "")
           CHECK_RESULTS=$(cat /tmp/check-results.txt 2>/dev/null || echo "No checks were run")
@@ -1171,6 +1303,7 @@ jobs:
           DOCKER_RESULTS=$(cat /tmp/docker-results.txt 2>/dev/null || echo "")
           SECURITY_RESULTS=$(cat /tmp/security-results.txt 2>/dev/null || echo "No security scans were run")
           AUDIT_RESULTS=$(cat /tmp/audit-results.txt 2>/dev/null || echo "")
+          SONAR_RESULTS=$(cat /tmp/sonar-results.txt 2>/dev/null || echo "")
 
           USER_MSG="## Pull Request: ${{ github.event.pull_request.title }}
           Author: ${{ github.event.pull_request.user.login }}
@@ -1195,7 +1328,10 @@ jobs:
           ## Dependency Vulnerability Audit
           ${AUDIT_RESULTS:0:3000}
 
-          Review this PR thoroughly. Pay special attention to any security findings from gitleaks or Trivy, and flag any dependency vulnerabilities."
+          ## SonarQube Analysis Results
+          ${SONAR_RESULTS:0:5000}
+
+          Review this PR thoroughly. Pay special attention to any security findings from gitleaks or Trivy, flag dependency vulnerabilities, and analyze SonarQube findings if available."
 
           RESPONSE=$(curl -sS -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
@@ -1235,13 +1371,14 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let review = '{}', checks = 'No results', commands = {}, dockerResults = '', securityResults = '', auditResults = '';
+            let review = '{}', checks = 'No results', commands = {}, dockerResults = '', securityResults = '', auditResults = '', sonarResults = '';
             try { review = fs.readFileSync('/tmp/ai-review.txt', 'utf8'); } catch(e) {}
             try { checks = fs.readFileSync('/tmp/check-results.txt', 'utf8'); } catch(e) {}
             try { commands = JSON.parse(fs.readFileSync('/tmp/ai-commands.json', 'utf8')); } catch(e) {}
             try { dockerResults = fs.readFileSync('/tmp/docker-results.txt', 'utf8').trim(); } catch(e) {}
             try { securityResults = fs.readFileSync('/tmp/security-results.txt', 'utf8').trim(); } catch(e) {}
             try { auditResults = fs.readFileSync('/tmp/audit-results.txt', 'utf8').trim(); } catch(e) {}
+            try { sonarResults = fs.readFileSync('/tmp/sonar-results.txt', 'utf8').trim(); } catch(e) {}
 
             const passed = '${{ steps.checks.outputs.passed }}' || '0';
             const failed = '${{ steps.checks.outputs.failed }}' || '0';
@@ -1278,10 +1415,16 @@ jobs:
               : '';
 
             const cmdList = (commands.check_commands || [])
-              .map((c, i) => `${i+1}. \`${c.cmd}\`\n   - **Purpose:** ${c.purpose}\n   - **Confidence:** ${c.confidence}`)
+              .map((c, i) => [
+                `${i+1}. \`${c.cmd}\``,
+                `   - **Purpose:** ${c.purpose}`,
+                `   - **Confidence:** ${c.confidence}`,
+                ''
+              ].join('\n'))
               .join('\n');
 
-            const verdictEmoji = { approve: '\u2705', request_changes: '\ud83d\udd34', comment: '\ud83d\udcac' }[reviewData.verdict] || '\ud83d\udcac';
+            const verdictMap = { approve: ['\u2705', 'APPROVED'], needs_work: ['\u26a0\ufe0f', 'NEEDS WORK'], reject: ['\ud83d\udd34', 'CHANGES REQUIRED'] };
+            const [verdictEmoji, verdictLabel] = verdictMap[reviewData.verdict] || ['\u2139\ufe0f', 'REVIEW'];
             const statusEmoji = checksExit === '0' ? '\u2705' : (setupFailed ? '\u26a0\ufe0f' : '\u274c');
 
             const issuesList = (reviewData.issues || []).map(i => {
@@ -1313,7 +1456,7 @@ jobs:
               : '';
 
             const body = [
-              `## \ud83e\udd16 AI Code Review \u2014 ${verdictEmoji} ${(reviewData.verdict || 'comment').replace('_', ' ').toUpperCase()}`,
+              `## \ud83e\udd16 AI Code Review \u2014 ${verdictEmoji} ${verdictLabel}`,
               '',
               `> ${reviewData.summary || 'Review complete.'}`,
               sizeWarning,
@@ -1322,13 +1465,13 @@ jobs:
               `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${securityExit === '0' ? '\u2705' : '\u26a0\ufe0f'} | ${Math.round((reviewData.confidence || 0) * 100)}% | ${durationStr} |`,
               multiStackInfo,
               '',
+              repoHealthSection,
+              '',
               reviewData.check_results_analysis ? `### CI Analysis\n${reviewData.check_results_analysis}\n` : '',
               reviewData.security_analysis ? `### Security Analysis\n${reviewData.security_analysis}\n` : '',
               issuesList ? `### Issues Found\n\n${issuesList}\n` : '',
               positives ? `### \u2705 What\u2019s Good\n\n${positives}\n` : '',
               suggestions ? `### \ud83d\udca1 Suggestions\n\n${suggestions}\n` : '',
-              '',
-              repoHealthSection,
               '',
               '<details><summary>\ud83d\udccb Commands AI decided to run</summary>',
               '',
@@ -1345,6 +1488,7 @@ jobs:
               dockerFound ? '<details><summary>\ud83d\udc33 Docker Build & Trivy Scan</summary>\n\n' + dockerResults + '\n\n</details>\n' : '',
               securityResults ? '<details><summary>\ud83d\udd12 Security & File Hygiene Scans</summary>\n\n' + securityResults + '\n\n</details>\n' : '',
               auditResults ? '<details><summary>\ud83d\udce6 Dependency Vulnerability Audit</summary>\n\n' + auditResults + '\n\n</details>\n' : '',
+              sonarResults ? '<details><summary>\ud83d\udcca SonarQube Analysis</summary>\n\n' + sonarResults + '\n\n</details>\n' : '',
               '',
               '---',
               `<sub>\ud83e\udd16 Powered by <a href="https://github.com/bayer-int/agentic-review">agentic-review</a> | Informational only \u2014 does not block merging | ${changedFiles} files, ${diffLines} lines reviewed in ${durationStr}</sub>`,
