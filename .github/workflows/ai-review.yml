@@ -216,10 +216,14 @@ jobs:
           RULES:
           1) ONLY derive commands from what you see in the repository config files.
           2) DO NOT invent commands the repo does not support.
-          3) For setup_commands: include dependency installation for ALL stacks. Use `cd <dir> &&` prefix for subdirectories.
-          4) For check_commands: include linting, type checking, formatting, unit tests, build verification for ALL stacks.
-          5) Do NOT include e2e tests, deployment commands, or docker builds.
-          6) Stack-specific guidance:
+          3) CRITICAL PATH RULE: EVERY command (setup AND check) MUST start with the full path prefix to ensure it runs in the correct directory. Format: "cd ${WORKDIR}/<subdir> && <command>" where ${WORKDIR} is the literal string "${WORKDIR}".
+             - Root-level project: "cd ${WORKDIR} && pnpm install" or "cd ${WORKDIR} && pnpm lint"
+             - Subdirectory: "cd ${WORKDIR}/e2e && npm ci" or "cd ${WORKDIR}/frontend && npm run build"
+             - NEVER write bare commands like "pnpm install" or "npm test" — ALWAYS prefix with "cd ${WORKDIR} && " or "cd ${WORKDIR}/<subdir> && "
+          4) For setup_commands: include dependency installation for ALL stacks.
+          5) For check_commands: include linting, type checking, formatting, unit tests, build verification for ALL stacks.
+          6) Do NOT include e2e tests, deployment commands, or docker builds.
+          7) Stack-specific guidance:
              - Node/TS: read package.json scripts, packageManager field, .npmrc
              - Python: read pyproject.toml [tool.*], Makefile targets, requirements*.txt
              - Go: read go.mod, look for golangci-lint
@@ -246,7 +250,11 @@ jobs:
           ## Configuration Files
           ${CONFIG_FILES:0:40000}
 
-          Analyze this repository. It may be a monorepo with multiple stacks in different directories. Detect ALL stacks present. Generate commands for each stack to validate code quality, run tests, check formatting, and verify builds. For infrastructure code (Terraform, Helm, Kubernetes), include IaC-specific validation checks. Use 'cd <dir> &&' prefix when commands need to run in subdirectories."
+          Analyze this repository. It may be a monorepo with multiple stacks in different directories. Detect ALL stacks present. Generate commands for each stack to validate code quality, run tests, check formatting, and verify builds. For infrastructure code (Terraform, Helm, Kubernetes), include IaC-specific validation checks.
+
+          CRITICAL: EVERY command MUST be prefixed with 'cd \${WORKDIR} && ' (for root-level) or 'cd \${WORKDIR}/<subdir> && ' (for subdirectories). The literal text \${WORKDIR} will be replaced with the actual workspace path at runtime. NEVER write a bare command without this prefix. Examples:
+          - Root project: 'cd \${WORKDIR} && pnpm install', 'cd \${WORKDIR} && pnpm lint'
+          - Subdirectory: 'cd \${WORKDIR}/e2e && npm ci', 'cd \${WORKDIR}/backend && pytest'"
 
           RESPONSE=$(curl -sS -X POST "${AI_API_ENDPOINT}" \
             -H "Content-Type: application/json" \
@@ -453,18 +461,29 @@ jobs:
           FAILED_COUNT=0
           SETUP_FAILED=false
 
+          # WORKDIR is the repo root — AI commands use ${WORKDIR} prefix for all paths
+          WORKDIR="$PWD"
+          export WORKDIR
+
           echo "--- SETUP: Installing dependencies ---"
           SETUP_CMDS=$(jq -r '.setup_commands[]?.cmd // empty' /tmp/ai-commands.json)
+          REPO_ROOT="$PWD"
           while IFS= read -r cmd; do
             [[ -z "$cmd" ]] && continue
+            # Substitute ${WORKDIR} with actual path; also handle commands without it
+            cmd="${cmd//\$\{WORKDIR\}/$WORKDIR}"
+            cmd="${cmd//\$WORKDIR/$WORKDIR}"
             echo ""
             echo "  > $cmd"
-            if eval "$cmd" 2>&1; then
+            # Run in subshell so 'cd' commands don't affect subsequent steps
+            if (eval "$cmd") 2>&1; then
               echo "  OK: Setup command succeeded"
             else
               echo "  FAIL: Setup command failed (exit $?)"
               SETUP_FAILED=true
             fi
+            # Always return to repo root after each setup command
+            cd "$REPO_ROOT"
           done <<< "$SETUP_CMDS"
           echo ""
 
@@ -477,11 +496,17 @@ jobs:
             CONFIDENCE=$(jq -r ".check_commands[$i].confidence" /tmp/ai-commands.json)
             [[ -z "$CMD" || "$CMD" == "null" ]] && continue
 
+            # Substitute ${WORKDIR} with actual repo root path
+            CMD="${CMD//\$\{WORKDIR\}/$WORKDIR}"
+            CMD="${CMD//\$WORKDIR/$WORKDIR}"
+
             echo ""
             echo "  [$((i+1))/${CHECK_COUNT}] ${PURPOSE} [${CONFIDENCE}]"
             echo "  > ${CMD}"
 
+            # Run in subshell so 'cd' in commands doesn't affect subsequent checks
             CMD_OUTPUT=$(eval "$CMD" 2>&1) && CMD_EXIT=0 || CMD_EXIT=$?
+            cd "$REPO_ROOT"
 
             if [[ $CMD_EXIT -ne 0 ]]; then
               OVERALL_EXIT=1
