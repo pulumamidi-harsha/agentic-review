@@ -1,62 +1,61 @@
-# Universal PR Review Prompt (Legacy — kept for reference)
+# PR Review Prompt — Architecture Reference
 
-> **NOTE:** This prompt is no longer used directly by the pipeline.
-> The pipeline now uses a 2-pass approach:
-> - `detect-and-command.md` — AI reads the repo and decides what to run
-> - `review-results.md` — AI reviews the code and results
->
-> This file is kept for reference only.
+> **NOTE:** This file documents the 2-pass review architecture used by the pipeline.
+> The actual prompts are embedded in the workflow for performance (no file reads needed).
+> See `detect-and-command.md` and `review-results.md` for the exact prompt content.
 
-3. **Review the code changes** for:
-   - Security vulnerabilities (OWASP Top 10)
-   - Performance issues
-   - Error handling gaps
-   - Breaking changes
-   - Test coverage
-   - Documentation accuracy
-   - Code style consistency
+## 2-Pass Architecture
 
-4. **Output Format** — Return a structured JSON response:
+### Pass 1: Stack Detection & Command Generation (`detect-and-command.md`)
 
-```json
-{
-  "stack": {
-    "language": "TypeScript",
-    "framework": "React",
-    "package_manager": "npm",
-    "test_framework": "vitest",
-    "linter": "eslint"
-  },
-  "commands_to_run": [
-    {"cmd": "npm ci", "purpose": "Install dependencies"},
-    {"cmd": "npx eslint . --max-warnings=0", "purpose": "Lint check"},
-    {"cmd": "npx tsc --noEmit", "purpose": "Type check"},
-    {"cmd": "npm test -- --ci", "purpose": "Run tests"}
-  ],
-  "review": {
-    "summary": "Brief overall assessment",
-    "issues": [
-      {
-        "severity": "critical|high|medium|low|info",
-        "file": "src/components/Auth.tsx",
-        "line": 42,
-        "title": "Hardcoded secret in source",
-        "description": "API key is hardcoded...",
-        "suggestion": "Use environment variable..."
-      }
-    ],
-    "security": [],
-    "performance": [],
-    "approvals": ["List of things done well"]
-  },
-  "verdict": "approve|request_changes|comment",
-  "confidence": 0.92
-}
+**Input:** Repository file tree + all configuration files + custom instructions (if any)
+
+**Output:** JSON with detected stack, setup commands, check commands, runtime requirements
+
+**Key behaviors:**
+- Reads package.json scripts, Makefile targets, pyproject.toml tools, go.mod, etc.
+- Supports monorepos (detects multiple stacks in subdirectories)
+- Handles IaC (Terraform, Helm, Kubernetes, Ansible)
+- Respects custom instructions with priority over auto-detection
+- Never invents commands the repo doesn't support
+
+### Pass 2: Code Review & Verdict (`review-results.md`)
+
+**Input:** PR diff + CI check results + Docker/Trivy results + Security scans + SonarQube + Dependency audit
+
+**Output:** JSON with summary, verdict, issues, positives, suggestions, repo_health
+
+**Key behaviors:**
+- Reviews ONLY files changed in this PR (pre-existing issues go to repo_health)
+- Verdict: approve / needs_work / reject
+- Integrates SonarQube Quality Gate status into verdict
+- Does NOT hallucinate issues — must cite exact file:line
+- Separates PR issues from repository health issues
+
+## Verdict → PR Review Status Mapping
+
+| AI Verdict | GitHub Review Event | Effect on PR |
+|-----------|-------------------|--------------|
+| `approve` | APPROVE | Green checkmark |
+| `needs_work` | REQUEST_CHANGES | Blocks merge (dismissible) |
+| `reject` | REQUEST_CHANGES | Blocks merge (dismissible) |
+
+Previous bot reviews are auto-dismissed before submitting a new one.
+
+## Custom Instructions Flow
+
 ```
-
-## Context You Will Receive
-
-- Repository file tree
-- Changed files (diff)
-- Full content of key config files (package.json, tsconfig.json, etc.)
-- PR title and description
+Owner writes plain English in .agentic-review.yml or workflow input
+       │
+       ▼
+Security filtering (reject suppression, credentials, verdict manipulation)
+       │
+       ▼
+Validated payload injected into Pass 1 prompt with priority rules
+       │
+       ▼
+AI interprets and translates to commands (MATCH / OWNER ADDED / OWNER OVERRIDE)
+       │
+       ▼
+Pass 2 receives payload context for review awareness
+```
