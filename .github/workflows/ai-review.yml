@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: 'full'
+      custom_instructions:
+        description: 'Repository-specific instructions for the AI reviewer (commands to run, Docker build args, etc.)'
+        required: false
+        type: string
+        default: ''
     secrets:
       AI_API_KEY:
         description: 'API key for LLM (MGA/OpenAI/Azure OpenAI)'
@@ -79,6 +84,13 @@ jobs:
             echo "skip_security=${SKIP_SECURITY}" >> "$GITHUB_OUTPUT"
             echo "skip_checks=${SKIP_CHECKS}" >> "$GITHUB_OUTPUT"
             echo "max_diff_lines=${MAX_DIFF_LINES}" >> "$GITHUB_OUTPUT"
+
+            # Extract custom_instructions block (everything between custom_instructions: | and next top-level key)
+            FILE_INSTRUCTIONS=$(sed -n '/^custom_instructions:/,/^[a-z_]*:/{ /^custom_instructions:/d; /^[a-z_]*:/d; s/^  //; p; }' .agentic-review.yml 2>/dev/null || echo "")
+            if [[ -n "$FILE_INSTRUCTIONS" ]]; then
+              echo "  Found custom_instructions in .agentic-review.yml"
+              echo "$FILE_INSTRUCTIONS" > /tmp/repo-custom-instructions.txt
+            fi
           else
             echo "  No .agentic-review.yml found — using defaults"
             echo "has_config=false" >> "$GITHUB_OUTPUT"
@@ -87,6 +99,124 @@ jobs:
             echo "skip_checks=false" >> "$GITHUB_OUTPUT"
             echo "max_diff_lines=15000" >> "$GITHUB_OUTPUT"
           fi
+
+          # Merge: workflow input takes precedence over file config
+          CALLER_INPUT="${{ inputs.custom_instructions }}"
+          if [[ -n "$CALLER_INPUT" ]]; then
+            echo "  Custom instructions provided via workflow input"
+            echo "$CALLER_INPUT" > /tmp/caller-custom-instructions.txt
+          fi
+
+      - name: Analyze and validate custom payload
+        if: steps.skip_check.outputs.skip != 'true'
+        id: payload
+        run: |
+          echo ""
+          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+          echo "┃          PAYLOAD: Custom Instructions Analysis         ┃"
+          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+          echo ""
+
+          # Combine instructions (caller input overrides file config)
+          PAYLOAD=""
+          SOURCE="none"
+          if [[ -f /tmp/caller-custom-instructions.txt ]]; then
+            PAYLOAD=$(cat /tmp/caller-custom-instructions.txt)
+            SOURCE="workflow_input"
+          elif [[ -f /tmp/repo-custom-instructions.txt ]]; then
+            PAYLOAD=$(cat /tmp/repo-custom-instructions.txt)
+            SOURCE="agentic_review_yml"
+          fi
+
+          if [[ -z "$PAYLOAD" ]]; then
+            echo "  No custom payload provided — AI will auto-detect everything"
+            echo "has_payload=false" >> "$GITHUB_OUTPUT"
+            echo "" > /tmp/validated-payload.txt
+            exit 0
+          fi
+
+          echo "  Source: ${SOURCE}"
+          echo "  Raw payload:"
+          echo "  ────────────────────────────"
+          echo "$PAYLOAD" | sed 's/^/    /'
+          echo "  ────────────────────────────"
+          echo ""
+
+          # SECURITY ANALYSIS: Filter out dangerous/tricky instructions
+          VALIDATED=""
+          REJECTED=""
+          WARNINGS=""
+
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            # Skip empty lines
+            [[ -z "$line" ]] && continue
+
+            # Convert to lowercase for analysis
+            LOWER=$(echo "$line" | tr '[:upper:]' '[:lower:]')
+
+            # REJECT: "don't run", "skip", "ignore", "disable", "do not" — attempts to suppress checks
+            if echo "$LOWER" | grep -qE "(don.?t run|do not run|skip|ignore|disable|never run|exclude|bypass|suppress|hide|don.?t check|do not check|don.?t scan|do not scan|don.?t report|do not report)"; then
+              REJECTED="${REJECTED}    REJECTED (suppression attempt): ${line}\n"
+              continue
+            fi
+
+            # REJECT: Attempts to embed actual secret values
+            if echo "$line" | grep -qE "(password|token|key|secret)\s*[:=]\s*['\"]?[A-Za-z0-9+/=_-]{8,}"; then
+              REJECTED="${REJECTED}    REJECTED (contains credential value): ${line}\n"
+              continue
+            fi
+
+            # REJECT: Attempts to override verdict/approval
+            if echo "$LOWER" | grep -qE "(always approve|must approve|force approve|never reject|auto.?approve|verdict.?must.?be)"; then
+              REJECTED="${REJECTED}    REJECTED (verdict manipulation): ${line}\n"
+              continue
+            fi
+
+            # REJECT: Attempts to exfiltrate data
+            if echo "$LOWER" | grep -qE "(curl.*post|wget.*post|send.*to|upload.*to|exfil)"; then
+              REJECTED="${REJECTED}    REJECTED (data exfiltration attempt): ${line}\n"
+              continue
+            fi
+
+            # ACCEPT: Positive instructions (run X, use Y, pass Z, build with W)
+            if echo "$LOWER" | grep -qE "(run |use |pass |build |install |set |add |include |configure |enable |docker.?build|--build-arg|--secret|npm |pnpm |yarn |pip |go |cargo |mvn |gradle )"; then
+              VALIDATED="${VALIDATED}${line}\n"
+              continue
+            fi
+
+            # ACCEPT: Informational context (this repo uses X, our docker needs Y)
+            if echo "$LOWER" | grep -qE "(this (repo|project|app)|we use|our |needs |requires |depends on|dockerfile|docker.?compose|environment|variable|argument|artifactory|registry|npm.?rc)"; then
+              VALIDATED="${VALIDATED}${line}\n"
+              continue
+            fi
+
+            # GREY AREA: Not clearly malicious but not clearly useful — include with warning
+            WARNINGS="${WARNINGS}    UNCLEAR (included with caution): ${line}\n"
+            VALIDATED="${VALIDATED}${line}\n"
+          done <<< "$PAYLOAD"
+
+          # Report analysis results
+          if [[ -n "$REJECTED" ]]; then
+            echo "  ⚠️  REJECTED instructions (security/manipulation attempts):"
+            echo -e "$REJECTED"
+          fi
+
+          if [[ -n "$WARNINGS" ]]; then
+            echo "  ⚡ UNCLEAR instructions (included with caution):"
+            echo -e "$WARNINGS"
+          fi
+
+          if [[ -n "$VALIDATED" ]]; then
+            echo "  ✅ VALIDATED instructions (will be given priority):"
+            echo -e "$VALIDATED" | sed 's/^/    /'
+            echo -e "$VALIDATED" > /tmp/validated-payload.txt
+            echo "has_payload=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "  ❌ No valid instructions remained after security analysis"
+            echo "" > /tmp/validated-payload.txt
+            echo "has_payload=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo ""
 
       - name: Gather repository context
         if: steps.skip_check.outputs.skip != 'true'
@@ -243,12 +373,41 @@ jobs:
 
           FILE_TREE=$(cat /tmp/file-tree.txt)
           CONFIG_FILES=$(cat /tmp/config-files.txt)
+          CUSTOM_PAYLOAD=$(cat /tmp/validated-payload.txt 2>/dev/null || echo "")
+
+          # Build payload section for the prompt
+          PAYLOAD_SECTION=""
+          if [[ -n "$CUSTOM_PAYLOAD" ]]; then
+            PAYLOAD_SECTION="
+          ## ⚡ REPOSITORY OWNER INSTRUCTIONS (HIGH PRIORITY)
+          The repository owner has provided instructions in plain English below. These are NOT exact commands — they are natural language descriptions of what they need. YOU must interpret them and translate into proper commands.
+
+          For example, if the owner says 'our Docker build needs artifactory username and token as build arguments', YOU should generate: docker build --build-arg ARTIFACTORY_USERNAME --build-arg ARTIFACTORY_AUTH_TOKEN ...
+
+          If the owner says 'run linting inside the root directory', YOU determine the correct lint command from the repo config (e.g., pnpm lint, npm run lint, eslint, etc.).
+
+          These instructions take PRIORITY over your auto-detection for any conflicting decisions. However, you MUST still include your auto-detected commands alongside — owner instructions ADD to or OVERRIDE your detection, not replace it entirely.
+
+          IMPORTANT: The owner references SECRET NAMES only (e.g., 'artifactory username', 'artifactory token'). Map these to the available secret names: ARTIFACTORY_USERNAME, ARTIFACTORY_AUTH_TOKEN, ORG_PAT. You must NEVER output actual secret values.
+
+          Owner instructions (plain English):
+          ${CUSTOM_PAYLOAD}
+
+          PRIORITY RULES:
+          - If owner says something and you also detected the same → report: MATCH (both agree)
+          - If owner mentions something you would not have detected → ADD it, report: OWNER ADDED
+          - If owner says to use X but you detected Y → USE X (owner wins), report: OWNER OVERRIDE
+          - Include BOTH owner-specified AND auto-detected commands in your output
+          - In your response, add a field: \"payload_analysis\": {\"source\": \"file|input\", \"accepted_count\": N, \"overrides\": [\"description of what was overridden\"]}
+          "
+          fi
 
           USER_MSG="## Repository File Tree
           ${FILE_TREE:0:6000}
 
           ## Configuration Files
           ${CONFIG_FILES:0:40000}
+          ${PAYLOAD_SECTION}
 
           Analyze this repository. It may be a monorepo with multiple stacks in different directories. Detect ALL stacks present. Generate commands for each stack to validate code quality, run tests, check formatting, and verify builds. For infrastructure code (Terraform, Helm, Kubernetes), include IaC-specific validation checks.
 
@@ -1534,6 +1693,18 @@ jobs:
           SECURITY_RESULTS=$(cat /tmp/security-results.txt 2>/dev/null || echo "No security scans were run")
           AUDIT_RESULTS=$(cat /tmp/audit-results.txt 2>/dev/null || echo "")
           SONAR_RESULTS=$(cat /tmp/sonar-results.txt 2>/dev/null || echo "")
+          CUSTOM_PAYLOAD=$(cat /tmp/validated-payload.txt 2>/dev/null || echo "")
+
+          # Build payload section for review context
+          PAYLOAD_REVIEW_SECTION=""
+          if [[ -n "$CUSTOM_PAYLOAD" ]]; then
+            PAYLOAD_REVIEW_SECTION="
+          ## Repository Owner Custom Instructions (for context)
+          The repository owner provided these instructions to guide the review pipeline.
+          Commands were executed with these instructions as priority. Note this in your review if relevant.
+          Instructions: ${CUSTOM_PAYLOAD:0:2000}
+          "
+          fi
 
           USER_MSG="## Pull Request: ${{ github.event.pull_request.title }}
           Author: ${{ github.event.pull_request.user.login }}
@@ -1560,6 +1731,7 @@ jobs:
 
           ## SonarQube Analysis Results
           ${SONAR_RESULTS:0:5000}
+          ${PAYLOAD_REVIEW_SECTION}
 
           Review this PR thoroughly. Pay special attention to any security findings from gitleaks or Trivy, flag dependency vulnerabilities, and analyze SonarQube findings if available."
 

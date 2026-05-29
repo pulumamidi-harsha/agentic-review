@@ -1,0 +1,29 @@
+# Minimal caller — AI auto-detects everything. No custom instructions needed.
+# If you DO want to give the AI hints about your repo, add a "with:" block:
+#
+#   with:
+#     custom_instructions: |
+#       Our Docker build needs artifactory username and token as build arguments.
+#       We use pnpm as our package manager.
+#       Run tests inside the root directory.
+#
+# Just write in plain English — the AI understands.
+name: AI PR Review
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ai-review:
+    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@main
+    secrets:
+      AI_API_KEY: ${{ secrets.AI_API_KEY }}
+      AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+      ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY }}
+      ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+      ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}

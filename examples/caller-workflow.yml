@@ -11,6 +11,20 @@
 #   - ARTIFACTORY_USERNAME: Bayer Artifactory username (for Docker builds needing private packages)
 #   - ARTIFACTORY_AUTH_TOKEN: Bayer Artifactory auth token (auto-mapped to Dockerfile ARGs)
 #
+# Optional inputs:
+#   - custom_instructions: Tell the AI about your repo in plain English.
+#     Just describe what your project needs — no need to write exact commands.
+#     The AI will understand and translate your instructions into proper actions.
+#
+#     Examples of what you can write:
+#       "Our Docker build needs artifactory username and token as build arguments"
+#       "Run linting inside the root directory"
+#       "Run tests inside the frontend folder"
+#       "We use pnpm, not npm"
+#       "The e2e folder has its own package.json, install dependencies there too"
+#
+# Alternative: Put custom_instructions in .agentic-review.yml in your repo root.
+#
 # SonarQube: Results are automatically picked up from existing SonarQube check runs
 # on the PR (no SONAR_TOKEN needed — uses GitHub Checks API via ORG_PAT).
 # ────────────────────────────────────────────────────────────────────────────────
@@ -27,6 +41,15 @@ permissions:
 jobs:
   ai-review:
     uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@main
+    with:
+      # Optional: Tell the AI about your repo in plain English.
+      # Just describe what you need — the AI figures out the rest.
+      # Only mention secret NAMES (like "artifactory username"), never actual values.
+      custom_instructions: |
+        Our Docker build needs artifactory username and artifactory auth token as build arguments.
+        We use pnpm as our package manager.
+        Run linting inside the root directory.
+        Run unit tests inside the root directory.
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
