@@ -456,6 +456,40 @@ jobs:
           echo "└─────────────────────────────────────────────────────┘"
           jq '.stack' /tmp/ai-commands.json 2>/dev/null || true
           echo ""
+
+          # Show custom payload analysis if provided
+          CUSTOM_PAYLOAD=$(cat /tmp/validated-payload.txt 2>/dev/null || echo "")
+          if [[ -n "$CUSTOM_PAYLOAD" ]]; then
+            echo "┌─────────────────────────────────────────────────────┐"
+            echo "│  📋 REPOSITORY OWNER INSTRUCTIONS                    │"
+            echo "└─────────────────────────────────────────────────────┘"
+            echo "  Owner provided these instructions (plain English):"
+            echo "$CUSTOM_PAYLOAD" | sed 's/^/    │ /'
+            echo ""
+            echo "┌─────────────────────────────────────────────────────┐"
+            echo "│  🧠 AI ANALYSIS & PRIORITY DECISIONS                 │"
+            echo "└─────────────────────────────────────────────────────┘"
+            PAYLOAD_ANALYSIS=$(jq -r '.payload_analysis // empty' /tmp/ai-commands.json 2>/dev/null)
+            if [[ -n "$PAYLOAD_ANALYSIS" && "$PAYLOAD_ANALYSIS" != "null" ]]; then
+              echo "  Source: $(jq -r '.payload_analysis.source // "unknown"' /tmp/ai-commands.json 2>/dev/null)"
+              echo "  Instructions accepted: $(jq -r '.payload_analysis.accepted_count // 0' /tmp/ai-commands.json 2>/dev/null)"
+              echo "  Overrides applied:"
+              jq -r '.payload_analysis.overrides[]? // empty' /tmp/ai-commands.json 2>/dev/null | sed 's/^/    → /' || echo "    → None (AI detection matched owner instructions)"
+            else
+              echo "  AI incorporated owner instructions into command selection."
+              echo "  Priority: Owner instructions > AI auto-detection"
+            fi
+            echo ""
+            echo "  ┌───────────────────────────────────────────────────┐"
+            echo "  │  PRIORITY ORDER: Owner instructions FIRST,        │"
+            echo "  │  then AI-detected commands that don't conflict.   │"
+            echo "  └───────────────────────────────────────────────────┘"
+            echo ""
+          else
+            echo "  ℹ️  No custom instructions provided — using AI auto-detection only"
+            echo ""
+          fi
+
           echo "  Setup commands:"
           jq -r '.setup_commands[]? | "    > \(.cmd) -- \(.purpose)"' /tmp/ai-commands.json 2>/dev/null || echo "    (none)"
           echo "  Check commands:"
@@ -1773,7 +1807,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let review = '{}', checks = 'No results', commands = {}, dockerResults = '', securityResults = '', auditResults = '', sonarResults = '';
+            let review = '{}', checks = 'No results', commands = {}, dockerResults = '', securityResults = '', auditResults = '', sonarResults = '', customPayload = '';
             try { review = fs.readFileSync('/tmp/ai-review.txt', 'utf8'); } catch(e) {}
             try { checks = fs.readFileSync('/tmp/check-results.txt', 'utf8'); } catch(e) {}
             try { commands = JSON.parse(fs.readFileSync('/tmp/ai-commands.json', 'utf8')); } catch(e) {}
@@ -1781,6 +1815,7 @@ jobs:
             try { securityResults = fs.readFileSync('/tmp/security-results.txt', 'utf8').trim(); } catch(e) {}
             try { auditResults = fs.readFileSync('/tmp/audit-results.txt', 'utf8').trim(); } catch(e) {}
             try { sonarResults = fs.readFileSync('/tmp/sonar-results.txt', 'utf8').trim(); } catch(e) {}
+            try { customPayload = fs.readFileSync('/tmp/validated-payload.txt', 'utf8').trim(); } catch(e) {}
 
             const passed = '${{ steps.checks.outputs.passed }}' || '0';
             const failed = '${{ steps.checks.outputs.failed }}' || '0';
@@ -1815,6 +1850,27 @@ jobs:
             const multiStackInfo = allStacks.length > 1
               ? '\n\n**Detected Stacks:**\n' + allStacks.map(s => `- ${s.language}${s.framework ? ' / ' + s.framework : ''} (\`${s.directory || 'root'}\`)`).join('\n') + '\n'
               : '';
+
+            // Custom instructions section
+            const payloadAnalysis = commands.payload_analysis || null;
+            let customInstructionsSection = '';
+            if (customPayload) {
+              const payloadLines = customPayload.split('\n').filter(l => l.trim()).map(l => `> ${l.trim()}`).join('\n');
+              const overrides = payloadAnalysis?.overrides?.length > 0
+                ? payloadAnalysis.overrides.map(o => `- ${o}`).join('\n')
+                : '- AI detection aligned with owner instructions (no conflicts)';
+              customInstructionsSection = [
+                '### 📋 Repository Owner Instructions',
+                '',
+                payloadLines,
+                '',
+                '**AI Priority Analysis:**',
+                `- Instructions accepted: ${payloadAnalysis?.accepted_count || 'all'}`,
+                `- Priority: Owner instructions > AI auto-detection`,
+                overrides ? `\n**Decisions:**\n${overrides}` : '',
+                ''
+              ].join('\n');
+            }
 
             const cmdList = (commands.check_commands || [])
               .map((c, i) => [
@@ -1866,6 +1922,8 @@ jobs:
               `|-------|--------|----------|------------|----------|`,
               `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${securityExit === '0' ? '\u2705' : '\u26a0\ufe0f'} | ${Math.round((reviewData.confidence || 0) * 100)}% | ${durationStr} |`,
               multiStackInfo,
+              '',
+              customInstructionsSection,
               '',
               repoHealthSection,
               '',
