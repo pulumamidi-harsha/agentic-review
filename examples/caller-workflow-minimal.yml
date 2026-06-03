@@ -17,6 +17,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write   # required for ai-approved / ai-rejected / ai-needs-work PR labels
 
 jobs:
   ai-review:

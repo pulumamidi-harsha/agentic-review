@@ -243,6 +243,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write   # PR labels: ai-approved, ai-rejected, ai-needs-work
 
 jobs:
   ai-review:
@@ -542,6 +543,15 @@ custom_instructions: |
 Add a label to skip the AI review entirely:
 - `skip-ai-review`
 - `no-review`
+
+### Outcome Labels (set automatically after each review)
+
+Visible on the PR list (like `dependencies` / `javascript`):
+- `ai-approved` — verdict approve
+- `ai-rejected` — verdict reject
+- `ai-needs-work` — verdict needs_work
+
+**Caller workflow must include `issues: write`** in `permissions:` (see examples). Labels are created in the repo on first use.
 
 ---
 
