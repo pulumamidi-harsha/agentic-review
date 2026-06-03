@@ -21,7 +21,13 @@ git remote add origin git@github.com:YOUR_USER/monorepo-ai-review-demo.git
 git push -u origin main
 ```
 
-Add secrets on the repo (or org): `AI_API_KEY`, `AI_API_ENDPOINT`, `ORG_PAT`.
+Add secrets on the repo (or org):
+
+| Secret | Example value |
+|--------|----------------|
+| `AI_API_KEY` | Your MGA/OpenAI API key |
+| `AI_API_ENDPOINT` | **Full URL** e.g. `https://chat.int.bayer.com/api/v2/chat/completions` (must include `/chat/completions` — a base URL alone causes HTTP 302) |
+| `ORG_PAT` | Optional for public pipeline repo (workflow falls back to `github.token`) |
 
 ## Trigger a review
 

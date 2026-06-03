@@ -222,8 +222,8 @@ Go to your repo **Settings → Secrets and variables → Actions** and add:
 | Secret | Required | Description |
 |--------|----------|-------------|
 | `AI_API_KEY` | ✅ | API key for the LLM service (MGA) |
-| `AI_API_ENDPOINT` | ✅ | Chat completions endpoint URL |
-| `ORG_PAT` | ✅ | Org-level PAT with repo read access |
+| `AI_API_ENDPOINT` | ✅ | **Full** chat completions URL (must end with `/chat/completions`, e.g. `…/api/v2/chat/completions`) |
+| `ORG_PAT` | Optional* | Org PAT for private cross-repo checkout; public pipeline repos can omit (uses `github.token`) |
 | `ARTIFACTORY_USERNAME` | Optional | Bayer Artifactory username (for Docker builds) |
 | `ARTIFACTORY_AUTH_TOKEN` | Optional | Bayer Artifactory auth token (for Docker builds) |
 

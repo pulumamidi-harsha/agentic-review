@@ -66,7 +66,8 @@ if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-pass1-raw.txt" "$SYSTEM_P
     echo "$CLEANED" > "${AGENTIC_TMP}/ai-commands.json"
   fi
 else
-  echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"dependency_audit":{"cmd":null,"purpose":""},"minimum_check_coverage":{"summary":"Pass 1 failed","categories":[]},"runtime_requirements":{}}' > "${AGENTIC_TMP}/ai-commands.json"
+  echo "::error::Pass 1 failed — LLM did not return valid commands. Check AI_API_ENDPOINT is the full URL (e.g. https://…/api/v2/chat/completions) and AI_API_KEY is valid."
+  echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"dependency_audit":{"cmd":null,"purpose":""},"minimum_check_coverage":{"summary":"Pass 1 failed — LLM call error (check AI_API_ENDPOINT and AI_API_KEY secrets)","categories":[]},"runtime_requirements":{}}' > "${AGENTIC_TMP}/ai-commands.json"
 fi
 
 bash "${SCRIPT_DIR}/format-check-coverage.sh"
