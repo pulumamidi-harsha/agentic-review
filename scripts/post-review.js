@@ -1,6 +1,7 @@
 const fs = require('fs');
 
 const AGENTIC_TMP = process.env.AGENTIC_TMP || '/tmp/agentic-review';
+const COMMENT_MARKER = '<!-- agentic-review:comment -->';
 
 function read(path, fallback = '') {
   try { return fs.readFileSync(path, 'utf8'); } catch { return fallback; }
@@ -10,6 +11,11 @@ function details(summary, content, open = false) {
   if (!content || !String(content).trim()) return '';
   const tag = open ? '<details open>' : '<details>';
   return `${tag}<summary>${summary}</summary>\n\n${String(content).trim()}\n\n</details>\n`;
+}
+
+function subsection(title, content) {
+  if (!content || !String(content).trim()) return '';
+  return `#### ${title}\n\n${String(content).trim()}\n`;
 }
 
 /** Normalize LLM fields that may be string, array, or object. */
@@ -24,12 +30,12 @@ function toBulletLines(value) {
   return String(value).split('\n').map(l => l.trim()).filter(Boolean);
 }
 
-function shortSummary(text, maxLen = 320) {
+function shortSummary(text, maxLen = 280) {
   const t = (Array.isArray(text) ? text.join(' ') : String(text || '')).trim();
   if (t.length <= maxLen) return t;
   const cut = t.slice(0, maxLen);
   const last = cut.lastIndexOf('. ');
-  return (last > 120 ? cut.slice(0, last + 1) : cut) + '… _(expand sections below)_';
+  return (last > 100 ? cut.slice(0, last + 1) : cut) + '…';
 }
 
 let review = read(`${AGENTIC_TMP}/ai-review.txt`, '{}');
@@ -78,8 +84,13 @@ const cmdList = (commands.check_commands || [])
   .map((c, i) => `${i + 1}. \`${c.cmd}\`\n   - ${c.purpose} [${c.confidence}]`)
   .join('\n');
 
-const verdictMap = { approve: ['\u2705', 'APPROVED'], needs_work: ['\u26a0\ufe0f', 'NEEDS WORK'], reject: ['\ud83d\udd34', 'CHANGES REQUIRED'] };
-const [verdictEmoji, verdictLabel] = verdictMap[reviewData.verdict] || ['\u2139\ufe0f', 'REVIEW'];
+const verdictMap = {
+  approve: ['\u2705', 'APPROVED', 'No blocking issues in the files you changed.'],
+  needs_work: ['\u26a0\ufe0f', 'NEEDS WORK', 'Address the issues below in your changed files before merge.'],
+  reject: ['\ud83d\udd34', 'CHANGES REQUIRED', 'Blocking issues in your changed files must be fixed.'],
+  comment: ['\u2139\ufe0f', 'REVIEW', 'See findings below.'],
+};
+const [verdictEmoji, verdictLabel, verdictLead] = verdictMap[reviewData.verdict] || verdictMap.comment;
 const statusEmoji = checksExit === '0' ? '\u2705' : (setupFailed ? '\u26a0\ufe0f' : '\u274c');
 
 const formatIssue = (i) => {
@@ -92,31 +103,39 @@ const prIssues = (reviewData.issues || []).filter(i => i.is_pr_change !== false)
 const otherIssues = (reviewData.issues || []).filter(i => i.is_pr_change === false);
 const issuesInPr = prIssues.map(formatIssue).join('\n\n');
 const issuesOther = otherIssues.map(formatIssue).join('\n\n');
+const filesWithPrIssues = [...new Set(prIssues.map(i => i.file).filter(Boolean))];
 
 const verdictReasons = reviewData.verdict_reasons || [];
 const prReasons = verdictReasons.filter(r => r.scope === 'pr_change');
 const outsideReasons = verdictReasons.filter(r => r.scope === 'check_failure_outside_diff' || r.scope === 'pre_existing');
 const prChangedFiles = read(`${AGENTIC_TMP}/pr-changed-files.txt`).trim().split('\n').filter(Boolean);
 
-let verdictWhySection = '';
-if (reviewData.verdict_rationale || prChangedFiles.length || prReasons.length) {
-  const lines = [];
-  if (prChangedFiles.length) {
-    lines.push(`**Files you changed:** ${prChangedFiles.map(f => `\`${f}\``).join(', ')}`);
-  }
-  toBulletLines(reviewData.verdict_rationale).forEach(l => {
-    lines.push(l.startsWith('-') ? l : `- ${l}`);
-  });
-  if (prReasons.length) {
-    lines.push('', '**Blocking reasons (in your diff):**');
-    prReasons.forEach(r => lines.push(`- \`${r.file || 'PR'}\`: ${r.reason}`));
-  }
-  if (outsideReasons.length) {
-    lines.push('', '**Not counted against this PR:**');
-    outsideReasons.forEach(r => lines.push(`- ${r.reason}`));
-  }
-  verdictWhySection = `### Why **${verdictLabel}**\n\n${lines.join('\n')}\n`;
+const verdictWhyLines = [];
+toBulletLines(reviewData.verdict_rationale).forEach(l => {
+  verdictWhyLines.push(l.startsWith('-') ? l : `- ${l}`);
+});
+if (prReasons.length) {
+  verdictWhyLines.push('', '**In your diff:**');
+  prReasons.forEach(r => verdictWhyLines.push(`- \`${r.file || 'PR'}\`: ${r.reason}`));
 }
+if (outsideReasons.length) {
+  verdictWhyLines.push('', '**Not counted against this PR:**');
+  outsideReasons.forEach(r => verdictWhyLines.push(`- ${r.reason}`));
+}
+
+const verdictBlock = [
+  `> ### ${verdictEmoji} **${verdictLabel}**`,
+  `> ${verdictLead}`,
+  '',
+  shortSummary(reviewData.summary) ? `**Summary:** ${shortSummary(reviewData.summary)}` : '',
+  prChangedFiles.length
+    ? `**Files you changed:** ${prChangedFiles.map(f => `\`${f}\``).join(', ')}`
+    : '',
+  filesWithPrIssues.length && reviewData.verdict !== 'approve'
+    ? `**Files with issues to fix:** ${filesWithPrIssues.map(f => `\`${f}\``).join(', ')}`
+    : '',
+  verdictWhyLines.length ? ['**Why:**', ...verdictWhyLines].join('\n') : '',
+].filter(Boolean).join('\n');
 
 const ownerInstructionsBlock = customPayload ? [
   customPayload.split('\n').filter(l => l.trim()).map(l => `> ${l.trim()}`).join('\n'),
@@ -173,11 +192,31 @@ const commandsDetail = [
   '',
   '**Checks:**',
   cmdList || '_None_',
-  '',
-  commands.dependency_audit?.cmd
-    ? `**Audit:** \`${commands.dependency_audit.cmd}\``
-    : '**Audit:** _skipped_',
 ].join('\n');
+
+const securityAndHygiene = [
+  securityResults,
+  dockerFound && dockerResults ? `**Docker / Trivy**\n\n${dockerResults}` : '',
+  sonarResults ? `**SonarQube**\n\n${sonarResults}` : '',
+  auditResults ? `**Dependency audit**\n\n${auditResults}` : '',
+].filter(Boolean).join('\n\n---\n\n');
+
+const fullCheckOutput = [
+  subsection('\ud83e\uddea CI analysis', reviewData.check_results_analysis),
+  subsection('\ud83d\udd12 Security analysis', reviewData.security_analysis),
+  subsection('\u2699\ufe0f Pass 1 — commands chosen', pass1Block),
+  subsection('\ud83d\udcca Minimum CI check coverage', checkCoverageMd),
+  subsection('\ud83d\udccb Commands executed', commandsDetail),
+  subsection('\ud83d\udcca Check runner output', checks),
+  subsection('\ud83d\udee1\ufe0f Security & hygiene scans', securityAndHygiene),
+].filter(Boolean).join('\n\n');
+
+const repositoryHealth = [
+  repoHealthBlock,
+  issuesOther ? subsection(`\ud83d\udd0d Other findings outside your diff (${otherIssues.length})`, issuesOther) : '',
+  positives ? subsection('\u2705 What\u2019s good (repository)', positives) : '',
+  suggestions ? subsection('\ud83d\udca1 Suggestions (repository)', suggestions) : '',
+].filter(Boolean).join('\n\n');
 
 const sizeWarning = prSize === 'very_large'
   ? `> \u26a0\ufe0f Large PR (${diffLines} lines, ${changedFiles} files).\n`
@@ -186,41 +225,30 @@ const sizeWarning = prSize === 'very_large'
   : '';
 
 const issueCountPr = prIssues.length;
-const issueCountOther = otherIssues.length;
 
 const body = [
+  COMMENT_MARKER,
   `## \ud83e\udd16 AI Code Review \u2014 ${verdictEmoji} ${verdictLabel}`,
   '',
-  `> ${shortSummary(reviewData.summary)}`,
-  verdictWhySection,
+  verdictBlock,
+  '',
+  issueCountPr > 0
+    ? `### \ud83d\udea8 Issues in your changed files (${issueCountPr})\n\n${issuesInPr}\n`
+    : reviewData.verdict !== 'approve'
+      ? `### \ud83d\udea8 Issues in your changed files\n\n_No file-specific issues were listed; see verdict above._\n`
+      : '',
+  customPayload ? details('\ud83d\udccb Owner instructions (this PR)', ownerInstructionsBlock) : '',
   sizeWarning,
   `| Stack | Checks | Security | Mode | Time |`,
   `|-------|--------|----------|------|------|`,
   `| ${stackInfo} | ${statusEmoji} ${passed} ok, ${failed} fail | ${securityExit === '0' ? '\u2705' : '\u26a0\ufe0f'} | ${reviewType} | ${durationStr} |`,
   '',
-  issueCountPr > 0
-    ? `### Issues in your changed files (${issueCountPr})\n\n${issuesInPr}\n`
-    : `### Issues in your changed files\n\nNone identified in this PR\u2019s diff.\n`,
-  '',
-  customPayload ? details('\ud83d\udccb Owner instructions', ownerInstructionsBlock) : '',
-  details('\u2699\ufe0f Pass 1 — commands chosen', pass1Block),
-  details('\ud83d\udcca Minimum CI check coverage', checkCoverageMd),
-  details('\ud83c\udfe5 Repository health (pre-existing)', repoHealthBlock),
-  details(`\ud83d\udd0d Other findings outside your diff (${issueCountOther})`, issuesOther),
-  details('\ud83e\uddea CI analysis', reviewData.check_results_analysis),
-  details('\ud83d\udd12 Security analysis', reviewData.security_analysis),
-  details('\u2705 What\u2019s good', positives),
-  details('\ud83d\udca1 Suggestions', suggestions),
-  details('\ud83d\udccb Full command list', commandsDetail),
-  pass1SummaryMd ? details('\ud83d\udd0d Pass 1 JSON summary', pass1SummaryMd) : '',
-  details('\ud83d\udcca Full check output', checks),
-  dockerFound ? details('\ud83d\udc33 Docker & Trivy', dockerResults) : '',
-  securityResults ? details('\ud83d\udee1\ufe0f Security & hygiene scans', securityResults) : '',
-  auditResults ? details('\ud83d\udce6 Dependency audit', auditResults) : '',
-  sonarResults ? details('\ud83d\udcca SonarQube', sonarResults) : '',
+  fullCheckOutput.trim() ? details('\ud83d\udcca Full check output', fullCheckOutput) : '',
+  repositoryHealth.trim() ? details('\ud83c\udfe5 Repository health (pre-existing)', repositoryHealth) : '',
+  pass1SummaryMd ? details('\ud83e\udde0 Pipeline plan (Pass 1)', pass1SummaryMd) : '',
   '',
   '---',
-  `<sub>\ud83e\udd16 <a href="https://github.com/pulumamidi-harsha/agentic-review">agentic-review</a> \u00b7 ${changedFiles} files \u00b7 ${diffLines} diff lines \u00b7 ${durationStr}</sub>`,
+  `<sub>\ud83e\udd16 <a href="https://github.com/pulumamidi-harsha/agentic-review">agentic-review</a> \u00b7 ${changedFiles} files \u00b7 ${diffLines} diff lines \u00b7 ${durationStr} \u00b7 _This comment is updated each run._</sub>`,
 ].filter(Boolean).join('\n');
 
-module.exports = { body, reviewData, durationStr };
+module.exports = { body, reviewData, durationStr, COMMENT_MARKER };

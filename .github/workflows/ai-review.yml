@@ -518,16 +518,31 @@ jobs:
           script: |
             const path = require('path');
             const modPath = path.join(process.env.GITHUB_WORKSPACE, '_agentic_review', 'scripts', 'post-review.js');
-            const { body, reviewData } = require(modPath);
+            const { body, reviewData, COMMENT_MARKER } = require(modPath);
 
-            const COMMENT_MARKER = '## 🤖 AI Code Review';
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              per_page: 50
-            });
-            const existing = comments.find(c => c.user.type === 'Bot' && c.body.startsWith(COMMENT_MARKER));
+            const isAiComment = (c) => {
+              const login = c.user?.login || '';
+              const bot = c.user?.type === 'Bot' || login === 'github-actions[bot]' || login.startsWith('github-actions');
+              if (!bot || !c.body) return false;
+              return c.body.includes(COMMENT_MARKER) || c.body.startsWith('## 🤖 AI Code Review');
+            };
+
+            let allComments = [];
+            for (let page = 1; page <= 10; page++) {
+              const { data } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100,
+                page
+              });
+              allComments = allComments.concat(data);
+              if (data.length < 100) break;
+            }
+
+            const aiComments = allComments.filter(isAiComment).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            const existing = aiComments[0] || null;
+
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -535,6 +550,15 @@ jobs:
                 comment_id: existing.id,
                 body
               });
+              for (const dup of aiComments.slice(1)) {
+                try {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: dup.id
+                  });
+                } catch (e) { console.log('delete duplicate comment:', e.message); }
+              }
             } else {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -566,13 +590,15 @@ jobs:
               }
             } catch (e) { console.log('list reviews:', e.message); }
 
+            // PR review event only records verdict on the timeline — full text lives in the issue comment above.
+            const reviewNote = '_See the **🤖 AI Code Review** comment (updated each run) for details._';
             if (verdict === 'approve') {
               await github.rest.pulls.createReview({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: context.issue.number,
                 event: 'APPROVE',
-                body: `✅ AI Review: APPROVED\n\n${reviewData.summary || ''}`
+                body: reviewNote
               }).catch(e => console.log('approve:', e.message));
             } else if (verdict === 'reject' || verdict === 'needs_work') {
               await github.rest.pulls.createReview({
@@ -580,9 +606,7 @@ jobs:
                 repo: context.repo.repo,
                 pull_number: context.issue.number,
                 event: 'REQUEST_CHANGES',
-                body: verdict === 'reject'
-                  ? `🔴 AI Review: CHANGES REQUIRED\n\n${reviewData.summary || ''}`
-                  : `⚠️ AI Review: NEEDS WORK\n\n${reviewData.summary || ''}`
+                body: reviewNote
               }).catch(e => console.log('request changes:', e.message));
             }
 
