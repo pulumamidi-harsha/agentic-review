@@ -20,9 +20,8 @@ max_diff_lines: 15000
 # ─────────────────────────────────────────────────────────────────────
 # SonarQube Integration (optional)
 # ─────────────────────────────────────────────────────────────────────
-# To enable SonarQube, pass SONAR_TOKEN in the caller workflow.
-# The pipeline auto-detects sonar-project.properties if present.
-# If not present, it derives the project key from the repo name.
+# SonarQube results are read from existing PR check runs via ORG_PAT
+# (no SONAR_TOKEN required). Ensure your repo runs SonarQube on PRs.
 
 # ─────────────────────────────────────────────────────────────────────
 # Custom Instructions (optional — HIGH PRIORITY for AI)

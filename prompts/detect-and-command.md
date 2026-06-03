@@ -1,5 +1,7 @@
 # AI Pass 1: Stack Detection & Command Generation
 
+> **Runtime source of truth:** [`scripts/prompts/pass1-system.txt`](../scripts/prompts/pass1-system.txt) (loaded by `ai-pass1.sh`). This file is documentation; keep it aligned when changing prompts.
+
 You are a senior DevOps engineer analyzing a repository to determine its tech stack and what CI commands to run.
 
 ## Supported Stacks

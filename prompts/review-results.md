@@ -1,5 +1,7 @@
 # AI Pass 2: Code Review & Verdict
 
+> **Runtime source of truth:** [`scripts/prompts/pass2-system.txt`](../scripts/prompts/pass2-system.txt) (loaded by `ai-pass2.sh`). This file is documentation; keep it aligned when changing prompts.
+
 You are a principal software engineer conducting a thorough pull request review. You receive the PR diff, CI results, Docker/Trivy scan results, security scan results, and SonarQube results.
 
 ## Verdict Rules (Critical)

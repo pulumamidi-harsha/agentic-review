@@ -1,8 +1,8 @@
 # PR Review Prompt — Architecture Reference
 
 > **NOTE:** This file documents the 2-pass review architecture used by the pipeline.
-> The actual prompts are embedded in the workflow for performance (no file reads needed).
-> See `detect-and-command.md` and `review-results.md` for the exact prompt content.
+> Runtime prompts live in `scripts/prompts/pass1-system.txt` and `scripts/prompts/pass2-system.txt`.
+> See `detect-and-command.md` and `review-results.md` for expanded documentation.
 
 ## 2-Pass Architecture
 

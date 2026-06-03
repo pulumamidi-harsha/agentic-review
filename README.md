@@ -27,6 +27,32 @@ A **centralized, reusable** GitHub Actions workflow that automatically reviews p
 
 ---
 
+## Review modes (`review_type`)
+
+| Mode | Description |
+|------|-------------|
+| `full` (default) | Stack detection, CI checks, Docker/Trivy, security scans, dependency audit, SonarQube, AI review |
+| `quick` | Faster: skips Docker, dependency audit, and heavy repo-wide hygiene scans |
+| `security` | Skips AI-determined lint/test; focuses on security scans, Docker, Trivy, dependency audit |
+
+```yaml
+jobs:
+  ai-review:
+    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@main
+    with:
+      review_type: quick
+```
+
+## Parallel pipeline
+
+The workflow runs **multiple jobs in parallel** after context preparation:
+
+1. **prepare** — config, diff, AI Pass 1 (stack detection)
+2. In parallel: **checks**, **scans**, **docker** (if applicable), **sonar**
+3. **finalize** — AI Pass 2, PR comment, review status
+
+This reduces wall-clock time compared to a single serial job.
+
 ## How It Works
 
 When a PR is opened or updated on any repo that calls this workflow:
@@ -540,7 +566,14 @@ Add a label to skip the AI review entirely:
 agentic-review/
 ├── .github/
 │   └── workflows/
-│       └── ai-review.yml          ← The reusable workflow (all logic)
+│       ├── ai-review.yml          ← Reusable workflow (multi-job orchestrator)
+│       └── ai-review-backup.yml   ← Mirror of ai-review.yml for rollback
+├── scripts/
+│   ├── ai-pass1.sh / ai-pass2.sh  ← LLM calls (with retry)
+│   ├── run-checks.sh              ← Quality checks
+│   ├── run-security.sh            ← Gitleaks, hygiene, actionlint, etc.
+│   ├── run-docker.sh              ← Docker + Trivy
+│   └── run-sonar.sh               ← SonarQube via Checks API (with poll)
 ├── prompts/
 │   ├── detect-and-command.md      ← AI Pass 1 prompt documentation
 │   ├── review-results.md          ← AI Pass 2 prompt documentation

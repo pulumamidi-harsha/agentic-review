@@ -5,13 +5,13 @@ These scans run automatically on every PR, independent of the AI review. Results
 ## Scans Executed
 
 ### 1. Gitleaks — Secret Detection
-- Scans the entire codebase for hardcoded secrets (API keys, tokens, passwords, private keys)
+- Scans **commits in the PR range** (`origin/base...HEAD`) for new secrets (API keys, tokens, passwords, private keys)
 - Uses a custom `.gitleaks.toml` config to reduce false positives (excludes workflow files, lock files)
 - Findings are REDACTED in output (safe for PR comments)
 - Pre-existing secrets noted in repo_health; new secrets in PR flagged as CRITICAL
 
 ### 2. Sensitive File Detection
-Scans for files that should never be committed:
+Scans for **files added in this PR** that should never be committed:
 - `.env`, `.env.local`, `.env.production`
 - `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`
 - `id_rsa`, `id_ed25519`
