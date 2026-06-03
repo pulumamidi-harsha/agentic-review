@@ -618,11 +618,11 @@ jobs:
             }
 
             // PR list labels (like dependabot labels) — visible before opening the PR
-            const AI_LABELS = ['ai-approved', 'ai-rejected', 'ai-needs-work'];
+            const AI_LABELS = ['ai-approved', 'ai-rejected', 'ai-needs-work', 'ai-review-suggestions'];
             const labelDefs = {
               'ai-approved': { color: '1a7f37', description: 'AI PR review: approved (no blocking issues in diff)' },
               'ai-rejected': { color: 'b60205', description: 'AI PR review: changes required (blocking issues)' },
-              'ai-needs-work': { color: 'fbca04', description: 'AI PR review: needs work (non-blocking improvements)' }
+              'ai-review-suggestions': { color: 'd1242f', description: 'AI PR review: suggested fixes in your changed files (non-blocking)' }
             };
             for (const [name, meta] of Object.entries(labelDefs)) {
               try {
@@ -642,7 +642,7 @@ jobs:
             let targetLabel = null;
             if (verdict === 'approve') targetLabel = 'ai-approved';
             else if (verdict === 'reject') targetLabel = 'ai-rejected';
-            else if (verdict === 'needs_work') targetLabel = 'ai-needs-work';
+            else if (verdict === 'needs_work') targetLabel = 'ai-review-suggestions';
 
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,

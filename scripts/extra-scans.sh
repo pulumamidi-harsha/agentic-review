@@ -56,19 +56,87 @@ if [[ -n "$DOCKER_CHANGED" ]]; then
   fi
 fi
 
-# tfsec on changed terraform
+# tfsec on changed terraform (scoped to PR-affected stacks when inventory available)
 TF_CHANGED=$(echo "$CHANGED" | grep '\.tf$' || true)
 if [[ -n "$TF_CHANGED" ]]; then
   curl -sSfL https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 -o /usr/local/bin/tfsec 2>/dev/null && chmod +x /usr/local/bin/tfsec || true
   if command -v tfsec &>/dev/null; then
-    agentic_log "  Running tfsec..."
-    TF_OUT=$(tfsec . --minimum-severity HIGH 2>&1) && TF_EXIT=0 || TF_EXIT=$?
-    if [[ $TF_EXIT -ne 0 ]]; then
-      EXTRA_RESULTS+="### tfsec (Terraform) -- ⚠ Findings"$'\n'
-      EXTRA_RESULTS+='```'$'\n'"${TF_OUT:0:3000}"$'\n''```'$'\n\n'
-      EXTRA_EXIT=1
-    else
-      EXTRA_RESULTS+="### tfsec (Terraform) -- ✅ PASSED"$'\n\n'
+    TFSEC_DIRS="."
+    if [[ -f "${AGENTIC_TMP}/iac-inventory.json" ]] && jq -e '.is_iac_repo == true' "${AGENTIC_TMP}/iac-inventory.json" &>/dev/null; then
+      mapfile -t TFSEC_DIRS < <(jq -r '.pr_affected.stacks_for_lint[]? // empty' "${AGENTIC_TMP}/iac-inventory.json" 2>/dev/null | sort -u)
+      [[ ${#TFSEC_DIRS[@]} -eq 0 ]] && TFSEC_DIRS=(".")
+    fi
+    for scan_dir in "${TFSEC_DIRS[@]}"; do
+      [[ -d "$scan_dir" ]] || continue
+      agentic_log "  Running tfsec on ${scan_dir}..."
+      TF_OUT=$(tfsec "$scan_dir" --minimum-severity HIGH 2>&1) && TF_EXIT=0 || TF_EXIT=$?
+      if [[ $TF_EXIT -ne 0 ]]; then
+        EXTRA_RESULTS+="### tfsec (${scan_dir}) -- ⚠ Findings"$'\n'
+        EXTRA_RESULTS+='```'$'\n'"${TF_OUT:0:3000}"$'\n''```'$'\n\n'
+        EXTRA_EXIT=1
+      else
+        EXTRA_RESULTS+="### tfsec (${scan_dir}) -- ✅ PASSED"$'\n\n'
+      fi
+    done
+  fi
+fi
+
+# tflint + checkov for IaC repos (PR-affected platform stacks)
+if [[ -f "${AGENTIC_TMP}/iac-inventory.json" ]] && jq -e '.is_iac_repo == true' "${AGENTIC_TMP}/iac-inventory.json" &>/dev/null; then
+  mapfile -t IAC_STACKS < <(jq -r '.pr_affected.stacks_for_lint[]? // empty' "${AGENTIC_TMP}/iac-inventory.json" 2>/dev/null | sort -u)
+  if [[ ${#IAC_STACKS[@]} -eq 0 ]]; then
+    mapfile -t IAC_STACKS < <(jq -r '.platform_stacks[]? // empty' "${AGENTIC_TMP}/iac-inventory.json" 2>/dev/null | sort -u)
+  fi
+
+  TFLINT_CFG=$(jq -r '.root_config.tflint // empty' "${AGENTIC_TMP}/iac-inventory.json" 2>/dev/null)
+  if [[ -n "$TFLINT_CFG" && ${#IAC_STACKS[@]} -gt 0 ]]; then
+    if command -v tflint &>/dev/null || {
+      curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash 2>/dev/null
+    }; then
+      if command -v tflint &>/dev/null; then
+        agentic_log "  Running tflint (IaC stacks: ${IAC_STACKS[*]})..."
+        tflint --init --config="${TFLINT_CFG}" 2>/dev/null || true
+        for stack in "${IAC_STACKS[@]}"; do
+          [[ -d "$stack" ]] || continue
+          TL_OUT=""
+          if [[ -d "${stack}/infrastructure" ]]; then
+            TL_OUT+=$(tflint --config="${TFLINT_CFG}" --chdir="${stack}/infrastructure" 2>&1)$'\n'
+          fi
+          if [[ -d "${stack}/modules" ]]; then
+            for mod_dir in "${stack}"/modules/*/; do
+              [[ -d "$mod_dir" ]] || continue
+              TL_OUT+=$(tflint --config="${TFLINT_CFG}" --chdir="$mod_dir" 2>&1)$'\n'
+            done
+          fi
+          if echo "$TL_OUT" | grep -qE 'Error|Failed|issues found'; then
+            EXTRA_RESULTS+="### tflint (${stack}) -- ⚠ Issues"$'\n'
+            EXTRA_RESULTS+='```'$'\n'"${TL_OUT:0:3000}"$'\n''```'$'\n\n'
+            EXTRA_EXIT=1
+          elif [[ -n "$TL_OUT" ]]; then
+            EXTRA_RESULTS+="### tflint (${stack}) -- ✅ PASSED"$'\n\n'
+          fi
+        done
+      fi
+    fi
+  fi
+
+  CHECKOV_CFG=$(jq -r '.root_config.checkov // empty' "${AGENTIC_TMP}/iac-inventory.json" 2>/dev/null)
+  if [[ -n "$CHECKOV_CFG" && ${#IAC_STACKS[@]} -gt 0 ]]; then
+    if command -v checkov &>/dev/null || pip install -q checkov 2>/dev/null; then
+      if command -v checkov &>/dev/null; then
+        agentic_log "  Running checkov (IaC stacks: ${IAC_STACKS[*]})..."
+        for stack in "${IAC_STACKS[@]}"; do
+          [[ -d "$stack" ]] || continue
+          CK_OUT=$(checkov -d "$stack" --framework terraform --quiet --compact 2>&1) && CK_EXIT=0 || CK_EXIT=$?
+          if [[ $CK_EXIT -ne 0 ]]; then
+            EXTRA_RESULTS+="### checkov (${stack}) -- ⚠ Findings"$'\n'
+            EXTRA_RESULTS+='```'$'\n'"${CK_OUT:0:3000}"$'\n''```'$'\n\n'
+            EXTRA_EXIT=1
+          else
+            EXTRA_RESULTS+="### checkov (${stack}) -- ✅ PASSED"$'\n\n'
+          fi
+        done
+      fi
     fi
   fi
 fi

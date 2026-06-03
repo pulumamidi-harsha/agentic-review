@@ -39,6 +39,9 @@ agentic_log "  PR diff: ${DIFF_LINES} lines across ${CHANGED_FILES} files"
 
 pr_changed_files > "${AGENTIC_TMP}/pr-changed-files.txt" 2>/dev/null || true
 
+# IaC / Terraform discovery (deploy roots, PR-affected targets, multi-env layout)
+bash "$(dirname "$0")/discover-iac.sh" 2>/dev/null || echo '{"is_iac_repo":false}' > "${AGENTIC_TMP}/iac-inventory.json"
+
 CONFIG_CONTENT=""
 CONFIG_COUNT=0
 find . -maxdepth 3 \( \
@@ -70,6 +73,46 @@ done < <(head -n 25 "${AGENTIC_TMP}/config-paths.txt" 2>/dev/null)
 
 echo "$CONFIG_CONTENT" > "${AGENTIC_TMP}/config-files.txt"
 agentic_log "  Config files loaded: ${CONFIG_COUNT}"
+
+# IaC-specific config (deeper scan — backend.tf, tfvars, workflows, deployment docs)
+IAC_CONTENT=""
+IAC_COUNT=0
+if jq -e '.is_iac_repo == true' "${AGENTIC_TMP}/iac-inventory.json" &>/dev/null; then
+  IAC_PATHS=()
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && IAC_PATHS+=("$p")
+  done < <(
+    {
+      find . \( -name 'backend.tf' -o -name 'terraform.tfvars' -o -name '.tflint.hcl' \
+        -o -name '.checkov.yml' -o -name '.checkov.yaml' -o -name '.terraform-version' \
+        -o -name 'DEPLOYMENT.md' -o -name 'terragrunt.hcl' \) \
+        -not -path './.git/*' 2>/dev/null
+      find . -path './.github/workflows/*' \( -name '*.yml' -o -name '*.yaml' \) \
+        -not -path './.git/*' 2>/dev/null | while read -r wf; do
+        grep -qiE 'terraform|tflint|checkov' "$wf" 2>/dev/null && echo "$wf"
+      done
+      jq -r '.deploy_roots[].path' "${AGENTIC_TMP}/iac-inventory.json" 2>/dev/null | while read -r root; do
+        [[ -d "$root" ]] || continue
+        find "$root" -maxdepth 1 \( -name 'main.tf' -o -name 'variables.tf' -o -name 'backend.tf' \
+          -o -name 'terraform.tfvars' -o -name 'provider.tf' \) 2>/dev/null
+      done
+    } | sort -u | head -n 35
+  )
+  for f in "${IAC_PATHS[@]}"; do
+    [[ -z "$f" || ! -f "$f" ]] && continue
+    if [[ $(wc -c < "$f" 2>/dev/null | tr -d ' ') -lt 50000 ]]; then
+      IAC_CONTENT+=$'\n=== FILE: '"$f"$' ===\n'
+      IAC_CONTENT+="$(cat "$f" 2>/dev/null || echo "")"$'\n'
+      IAC_COUNT=$((IAC_COUNT + 1))
+    fi
+  done
+  echo "$IAC_CONTENT" > "${AGENTIC_TMP}/iac-config-files.txt"
+  agentic_log "  IaC config files loaded: ${IAC_COUNT}"
+else
+  echo "" > "${AGENTIC_TMP}/iac-config-files.txt"
+fi
+
+write_github_output "is_iac_repo" "$(jq -r '.is_iac_repo // false' "${AGENTIC_TMP}/iac-inventory.json" 2>/dev/null || echo false)"
 
 PR_SIZE="normal"
 if [[ "${DIFF_LINES}" -gt 5000 ]]; then

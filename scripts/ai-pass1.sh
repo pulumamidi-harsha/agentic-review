@@ -21,6 +21,9 @@ SYSTEM_PROMPT=$(cat "${SCRIPT_DIR}/prompts/pass1-system.txt")
 
 FILE_TREE=$(head -c 6000 "${AGENTIC_TMP}/file-tree.txt" 2>/dev/null || echo "")
 CONFIG_FILES=$(head -c 40000 "${AGENTIC_TMP}/config-files.txt" 2>/dev/null || echo "")
+IAC_INVENTORY=$(cat "${AGENTIC_TMP}/iac-context.txt" 2>/dev/null || echo "")
+IAC_CONFIG=$(head -c 50000 "${AGENTIC_TMP}/iac-config-files.txt" 2>/dev/null || echo "")
+CHANGED_FILES_LIST=$(head -n 80 "${AGENTIC_TMP}/pr-changed-files.txt" 2>/dev/null | sed 's/^/- /' || echo "- (none)")
 CUSTOM_PAYLOAD=$(cat "${AGENTIC_TMP}/validated-payload.txt" 2>/dev/null || echo "")
 
 PR_META=""
@@ -45,15 +48,35 @@ Never output secret values — only map to ARTIFACTORY_USERNAME, ARTIFACTORY_AUT
 "
 fi
 
+IAC_SECTION=""
+if [[ -n "$IAC_INVENTORY" ]] && jq -e '.is_iac_repo == true' "${AGENTIC_TMP}/iac-inventory.json" &>/dev/null; then
+  IAC_JSON=$(cat "${AGENTIC_TMP}/iac-inventory.json" 2>/dev/null || echo '{}')
+  IAC_SECTION="
+## IaC / Terraform inventory (authoritative — use for deploy roots and PR-affected validation)
+${IAC_INVENTORY}
+
+## IaC inventory JSON
+${IAC_JSON}
+
+## IaC configuration files (backend.tf, terraform.tfvars, CI workflows, deployment docs)
+${IAC_CONFIG}
+"
+fi
+
 USER_MSG="${PR_META}
+## Changed files in this PR (use for PR-scoped checks — especially IaC deploy roots)
+${CHANGED_FILES_LIST}
+
 ## Repository File Tree
 ${FILE_TREE}
 
 ## Configuration Files
 ${CONFIG_FILES}
+${IAC_SECTION}
 ${PAYLOAD_SECTION}
 
-Analyze this repository (monorepo-aware). Return the full JSON schema from the system prompt: stack, stacks, setup_commands, check_commands, dependency_audit, minimum_check_coverage, runtime_requirements, payload_analysis.
+Analyze this repository (monorepo-aware, IaC-deep when Terraform/inventory present). Return the full JSON schema from the system prompt: stack, stacks, setup_commands, check_commands, dependency_audit, minimum_check_coverage, runtime_requirements, payload_analysis.
+For IaC repos: validate pr_affected.deploy_roots from inventory; use -var-file=terraform.tfvars when tfvars exists; when shared modules/infrastructure change, validate all env deploy roots in that stack.
 Every cmd MUST start with \"cd \${WORKDIR} && \" or \"cd \${WORKDIR}/<subdir> && \"."
 
 if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-pass1-raw.txt" "$SYSTEM_PROMPT" "$USER_MSG" 0 6144; then

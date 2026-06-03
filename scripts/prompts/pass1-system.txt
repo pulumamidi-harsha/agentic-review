@@ -22,13 +22,42 @@ MONOREPO / MULTI-STACK:
 - Generate setup_commands and check_commands for EVERY stack with correct directory context.
 - Set runtime_requirements fields from repo version files when present; use null only when that stack is not detected. Infer a default version only when the stack exists but no version file exists (see WHEN FILES ARE SILENT).
 
-INFRASTRUCTURE-AS-CODE (only when IaC files exist in the repo):
-- Terraform: use terraform fmt -check, terraform init -backend=false && terraform validate, tflint when .tflint.hcl exists.
+INFRASTRUCTURE-AS-CODE — DEEP HANDLING (when *.tf, backend.tf, or IaC inventory is present):
+
+IDENTIFY WHERE TO RUN (use IaC inventory in user message when provided — it is authoritative):
+1) DEPLOY ROOT = directory containing backend.tf OR terragrunt.hcl. This is where `terraform init` and `terraform validate` run — NOT parent modules/ folders.
+2) COMPOSITOR = */infrastructure/ (wires modules, usually NO backend.tf). Validated transitively when an environment deploy root runs validate — do NOT treat as apply target unless it has backend.tf.
+3) MODULE = */modules/<name>/ (reusable, no backend). Run `terraform init -backend=false && terraform validate` only when the PR changes that module directly OR repo CI validates modules standalone.
+4) MULTI-ENV LAYOUT (common patterns):
+   - <stack>/environments/{dev,staging,prod}/ — each env folder with backend.tf is a separate deploy root and state file.
+   - <stack>/infrastructure/ + modules/ with thin env wrappers calling source = "../../infrastructure".
+   - Initial-setup/vpc/{dev,staging,prod}/ — bootstrap stacks, each env is its own root.
+   - Single-stack: <stack>/infrastructure/ with backend.tf + terraform.tfvars (cross-env monitoring).
+5) terraform.tfvars (CRITICAL): when present in a deploy root, validation MUST load it:
+   `terraform init -backend=false && terraform validate -var-file=terraform.tfvars`
+   Also check for *.auto.tfvars in the same directory. tfvars holds env-specific values (account, region, sizing) — without it validate may fail or miss variable errors.
+6) PR-SCOPED VALIDATION (prefer over validating entire repo):
+   - Use pr_affected.deploy_roots from IaC inventory for check_commands.
+   - If PR changes */modules/* or */infrastructure/* → validate ALL deploy roots under that platform stack (dev + staging + prod), because shared code affects every environment.
+   - If PR changes only one env (e.g. data-platform/environments/staging/terraform.tfvars) → validate that env root only.
+   - If PR changes root .tflint.hcl or terraform CI workflow → run fmt/tflint across affected stacks per repo CI.
+7) READ REPO CI FIRST: when .github/workflows/*terraform* or quality-gate exists, mirror its validate matrix, TF_VERSION, tflint --chdir paths, and checkov -d stacks. Extend (do not shrink) env coverage when PR touches shared modules — e.g. if CI only validates prod but PR edits a shared module, also validate dev/staging roots.
+8) NEVER in check_commands: terraform apply, terraform plan against live backend, terragrunt run-all apply, or any command needing AWS/cloud credentials for real state.
+
+TERRAFORM CHECK COMMANDS (emit for each PR-affected deploy root):
+- Format: `terraform fmt -check -recursive` at repo root OR per changed stack (match repo CI).
+- Validate per deploy root:
+  `cd ${WORKDIR}/<deploy-root> && terraform init -backend=false && terraform validate` (+ `-var-file=terraform.tfvars` when tfvars exists).
+- tflint: when .tflint.hcl exists — `tflint --init --config=${WORKDIR}/.tflint.hcl` then `--chdir=<stack>/infrastructure` and each `<stack>/modules/*/` (match repo CI pattern). Mark pipeline_planned notes if extra-scans job covers tflint.
+- checkov: when .checkov.yml exists — `checkov -d <stack>` per affected platform stack (notes: covered by security scans job when applicable).
+
+OTHER IaC:
 - Helm: helm lint, helm template when Chart.yaml exists.
 - CloudFormation: cfn-lint when templates exist.
 - Ansible: ansible-lint when ansible.cfg or playbooks/ exist.
 - Kubernetes: kubeval or kubeconform when manifest dirs exist.
-- If Terraform modules/ exist, validate each module directory that contains *.tf.
+
+IaC minimum_check_coverage: always include iac_format, iac_validate, iac_lint (tflint), iac_security (checkov/tfsec) when repo configures them. Note gaps when CI validates only prod but repo has dev/staging/prod roots.
 
 QUALITY DIMENSIONS (every stack — include in check_commands when the repo configures them; use separate commands per tool when possible):
 | Dimension | What to detect in config | Examples (run only if repo supports — use package scripts or documented CLI) |
