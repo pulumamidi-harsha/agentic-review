@@ -165,7 +165,7 @@ jobs:
 
   checks:
     name: Quality checks and dependency audit
-    needs: prepare
+    needs: [gate, prepare]
     if: needs.gate.outputs.skip != 'true' && needs.prepare.outputs.skip_checks != 'true' && needs.prepare.outputs.review_type != 'security'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -287,7 +287,7 @@ jobs:
 
   scans:
     name: Security and hygiene scans
-    needs: prepare
+    needs: [gate, prepare]
     if: needs.gate.outputs.skip != 'true' && needs.prepare.outputs.skip_security != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -328,7 +328,7 @@ jobs:
 
   docker:
     name: Docker build and Trivy
-    needs: prepare
+    needs: [gate, prepare]
     if: needs.gate.outputs.skip != 'true' && needs.prepare.outputs.has_dockerfile == 'true' && needs.prepare.outputs.skip_docker != 'true' && needs.prepare.outputs.review_type != 'quick'
     runs-on: ubuntu-latest
     timeout-minutes: 20

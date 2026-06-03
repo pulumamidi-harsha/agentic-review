@@ -40,7 +40,7 @@ for f in $(find . -maxdepth 3 \( \
   -o -name "Gemfile" -o -name "Rakefile" -o -name ".rubocop.yml" \
   -o -name "mix.exs" -o -name "composer.json" -o -name "phpstan.neon" \
   -o -name "*.csproj" -o -name "*.sln" \
-  -name "Makefile" -o -name "Dockerfile" \
+  -o -name "Makefile" -o -name "Dockerfile" \
   -o -name "eslint.config*" -o -name ".eslintrc*" \
   -o -name "vitest.config*" -o -name "jest.config*" -o -name "pytest.ini" \
   -o -name "nx.json" -o -name "turbo.json" \
