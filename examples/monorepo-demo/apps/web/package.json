@@ -1,0 +1,14 @@
+{
+  "name": "@demo/web",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "build": "tsc",
+    "test": "pnpm run build && node --test test/smoke.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

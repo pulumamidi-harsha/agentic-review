@@ -1,0 +1,22 @@
+# AI PR Review — monorepo demo (Node + Python + Terraform)
+name: AI PR Review
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ai-review:
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@3d867fc7a77eaae0eb5947885046c3862b948814
+    with:
+      review_type: quick
+    secrets:
+      AI_API_KEY: ${{ secrets.AI_API_KEY }}
+      AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+      ORG_PAT: ${{ secrets.ORG_PAT }}

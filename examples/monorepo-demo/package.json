@@ -1,0 +1,12 @@
+{
+  "name": "monorepo-ai-review-demo",
+  "private": true,
+  "scripts": {
+    "lint": "pnpm -r run lint",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

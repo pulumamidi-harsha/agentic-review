@@ -509,12 +509,13 @@ Results appear in a collapsible section and are fed to the AI for analysis.
 
 The pipeline automatically handles repositories with multiple stacks in different directories. No configuration needed.
 
-**Example:**
+**Example layout** (see [`examples/monorepo-demo/`](examples/monorepo-demo/) for a copy-paste test repo with Node + Python + Terraform):
+
 ```
 my-repo/
-├── frontend/     ← React/TypeScript
-├── backend/      ← Python/FastAPI
-└── infra/        ← Terraform
+├── apps/web/         ← React/TypeScript
+├── services/api/     ← Python/FastAPI
+└── infra/            ← Terraform
 ```
 
 The AI detects 3 stacks and runs commands for each with proper `cd` prefixes. All needed runtimes are installed.

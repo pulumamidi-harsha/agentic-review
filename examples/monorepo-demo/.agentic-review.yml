@@ -1,0 +1,8 @@
+max_diff_lines: 15000
+
+custom_instructions: |
+  This is a monorepo with three stacks:
+  - apps/web — Node.js / TypeScript (pnpm), run lint and build there
+  - services/api — Python FastAPI, run ruff and pytest there
+  - infra — Terraform, run terraform fmt -check and terraform validate there
+  Use pnpm at the repo root for Node workspaces. Do not run E2E or Cypress.
