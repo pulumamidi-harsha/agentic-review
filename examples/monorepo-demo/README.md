@@ -61,6 +61,7 @@ jq '{stacks, check_commands: [.check_commands[] | {cmd, purpose}]}' "$AGENTIC_TM
 
 ## Layout notes
 
-- **Root** uses pnpm workspaces for `apps/*` only (Python and Terraform are sibling trees — typical monorepo pattern).
+- Root uses pnpm workspaces for `apps/*` only (Python and Terraform are sibling trees — typical monorepo pattern).
 - Checks are lightweight (`tsc`, `ruff`, `pytest`, `terraform validate`) so CI finishes quickly.
+- **No custom instructions** — Pass 1 auto-detects all three stacks from repo config files.
 - Change files in **one** stack first (e.g. only `apps/web`) to test scoped verdict behavior.
