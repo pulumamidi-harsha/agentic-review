@@ -114,7 +114,8 @@ jobs:
       elixir_version: ${{ steps.pass1.outputs.elixir_version }}
       terraform_version: ${{ steps.pass1.outputs.terraform_version }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PR repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -126,20 +127,25 @@ jobs:
           path: _agentic_review
           token: ${{ secrets.ORG_PAT }}
 
-      - id: timer
+      - name: Start review timer
+        id: timer
         run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - id: config
+      - name: Load repo configuration
+        id: config
         run: bash _agentic_review/scripts/load-config.sh
 
-      - run: bash _agentic_review/scripts/validate-payload.sh
+      - name: Validate custom instructions
+        run: bash _agentic_review/scripts/validate-payload.sh
 
-      - id: context
+      - name: Gather repository context
+        id: context
         env:
           MAX_DIFF_LINES: ${{ steps.config.outputs.max_diff_lines }}
         run: bash _agentic_review/scripts/gather-context.sh
 
-      - id: pass1
+      - name: AI Pass 1 — detect stack and commands
+        id: pass1
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
@@ -149,15 +155,18 @@ jobs:
           CHANGED_FILES: ${{ steps.context.outputs.changed_files }}
         run: bash _agentic_review/scripts/ai-pass1.sh
 
-      - run: echo "${{ steps.timer.outputs.start }}" > ${{ runner.temp }}/timer.txt
+      - name: Save timer for duration
+        run: echo "${{ steps.timer.outputs.start }}" > ${{ runner.temp }}/timer.txt
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload prepare artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: agentic-prepare
           path: ${{ env.AGENTIC_TMP }}/
           retention-days: 1
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload timer artifact
+        uses: actions/upload-artifact@v4
         with:
           name: agentic-timer
           path: ${{ runner.temp }}/timer.txt
@@ -174,23 +183,27 @@ jobs:
       failed: ${{ steps.run_checks.outputs.failed }}
       exit_code: ${{ steps.run_checks.outputs.exit_code }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PR repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/checkout@v4
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
           token: ${{ secrets.ORG_PAT }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@v4
         with:
           name: agentic-prepare
           path: ${{ env.AGENTIC_TMP }}
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         if: needs.prepare.outputs.node_version != ''
         with:
           node-version: ${{ needs.prepare.outputs.node_version }}
@@ -223,53 +236,61 @@ jobs:
           ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
         run: bash _agentic_review/scripts/configure-npm-registry.sh
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         if: needs.prepare.outputs.python_version != ''
         with:
           python-version: ${{ needs.prepare.outputs.python_version }}
           cache: pip
 
-      - uses: actions/setup-go@v5
+      - name: Setup Go
+        uses: actions/setup-go@v5
         if: needs.prepare.outputs.go_version != ''
         with:
           go-version: ${{ needs.prepare.outputs.go_version }}
           cache-dependency-path: go.sum
 
-      - uses: ruby/setup-ruby@v1
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
         if: needs.prepare.outputs.ruby_version != ''
         with:
           ruby-version: ${{ needs.prepare.outputs.ruby_version }}
           bundler-cache: true
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         if: needs.prepare.outputs.java_version != ''
         with:
           distribution: temurin
           java-version: ${{ needs.prepare.outputs.java_version }}
 
-      - uses: actions/setup-dotnet@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
         if: needs.prepare.outputs.dotnet_version != ''
         with:
           dotnet-version: ${{ needs.prepare.outputs.dotnet_version }}
 
-      - uses: shivammathur/setup-php@v2
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
         if: needs.prepare.outputs.php_version != ''
         with:
           php-version: ${{ needs.prepare.outputs.php_version }}
           tools: composer
 
-      - uses: erlef/setup-beam@v1
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
         if: needs.prepare.outputs.elixir_version != ''
         with:
           elixir-version: ${{ needs.prepare.outputs.elixir_version }}
           otp-version: '26'
 
-      - uses: hashicorp/setup-terraform@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         if: needs.prepare.outputs.terraform_version != ''
         with:
           terraform_version: ${{ needs.prepare.outputs.terraform_version }}
 
-      - name: Run checks
+      - name: Run quality checks
         id: run_checks
         continue-on-error: true
         run: bash _agentic_review/scripts/run-checks.sh
@@ -279,7 +300,8 @@ jobs:
         continue-on-error: true
         run: bash _agentic_review/scripts/run-dep-audit.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload checks artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: agentic-checks
           path: ${{ env.AGENTIC_TMP }}/
@@ -294,18 +316,21 @@ jobs:
     outputs:
       security_exit: ${{ steps.security.outputs.security_exit }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PR repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/checkout@v4
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
           token: ${{ secrets.ORG_PAT }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@v4
         with:
           name: agentic-prepare
           path: ${{ env.AGENTIC_TMP }}
@@ -320,7 +345,8 @@ jobs:
         continue-on-error: true
         run: bash _agentic_review/scripts/run-dep-audit.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload security artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: agentic-scans
           path: ${{ env.AGENTIC_TMP }}/
@@ -336,21 +362,24 @@ jobs:
       docker_found: ${{ steps.docker_step.outputs.docker_found }}
       docker_exit: ${{ steps.docker_step.outputs.docker_exit }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PR repository
+        uses: actions/checkout@v4
 
-      - uses: actions/checkout@v4
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
           token: ${{ secrets.ORG_PAT }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@v4
         with:
           name: agentic-prepare
           path: ${{ env.AGENTIC_TMP }}
 
-      - name: Docker build and Trivy
+      - name: Docker build and Trivy scan
         id: docker_step
         continue-on-error: true
         env:
@@ -359,12 +388,13 @@ jobs:
           SECRET_ORG_PAT: ${{ secrets.ORG_PAT }}
         run: bash _agentic_review/scripts/run-docker.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Docker scan artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: agentic-docker
           path: ${{ env.AGENTIC_TMP }}/
           retention-days: 1
-        if: always()
 
   sonar:
     name: SonarQube results
@@ -388,7 +418,8 @@ jobs:
           mkdir -p "${AGENTIC_TMP}"
           bash _agentic_review/scripts/run-sonar.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload SonarQube artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: agentic-sonar
           path: ${{ env.AGENTIC_TMP }}/
@@ -401,49 +432,56 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
           token: ${{ secrets.ORG_PAT }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@v4
         with:
           name: agentic-prepare
           path: ${{ env.AGENTIC_TMP }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download checks artifacts
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: agentic-checks
           path: ${{ env.AGENTIC_TMP }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download security artifacts
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: agentic-scans
           path: ${{ env.AGENTIC_TMP }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download Docker artifacts
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: agentic-docker
           path: ${{ env.AGENTIC_TMP }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download SonarQube artifacts
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: agentic-sonar
           path: ${{ env.AGENTIC_TMP }}
 
-      - uses: actions/download-artifact@v4
+      - name: Download timer artifact
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: agentic-timer
           path: ${{ runner.temp }}
 
-      - name: AI Pass 2
+      - name: AI Pass 2 — review and verdict
         continue-on-error: true
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}

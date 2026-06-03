@@ -10,7 +10,7 @@ CHANGED=$(pr_changed_files)
 [[ -z "$CHANGED" ]] && exit 0
 
 # Merge conflict markers in PR diff
-if grep -nE '^\+.*<<<<<<<|^\+.*=======|^\+.*>>>>>>>' "${AGENTIC_TMP}/pr-diff.txt" 2>/dev/null | head -10 | grep -q .; then
+if grep -nE '^\+.*<<<<<<<|^\+.*=======|^\+.*>>>>>>>' "${AGENTIC_TMP}/pr-diff.txt" 2>/dev/null | head -10 | grep -q . 2>/dev/null; then
   MARKERS=$(grep -nE '^\+.*<<<<<<<|^\+.*=======|^\+.*>>>>>>>' "${AGENTIC_TMP}/pr-diff.txt" | head -15)
   EXTRA_RESULTS+="### Merge Conflict Markers -- ❌ FOUND"$'\n'
   EXTRA_RESULTS+='```'$'\n'"${MARKERS}"$'\n''```'$'\n\n'
