@@ -25,6 +25,6 @@ jobs:
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
-      ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY }}
+      ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY || secrets.ORG_PAT || github.token }}
       ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
       ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}

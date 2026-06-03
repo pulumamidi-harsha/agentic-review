@@ -19,4 +19,5 @@ jobs:
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
-      ORG_PAT: ${{ secrets.ORG_PAT }}
+      # Optional for public pipeline repo — falls back to github.token in the workflow
+      ORG_PAT: ${{ secrets.ORG_PAT || github.token }}

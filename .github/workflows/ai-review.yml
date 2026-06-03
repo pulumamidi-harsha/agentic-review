@@ -44,7 +44,7 @@ on:
       AI_API_ENDPOINT:
         required: true
       ORG_PAT:
-        required: true
+        required: false
       ARTIFACTORY_USERNAME:
         required: false
       ARTIFACTORY_AUTH_TOKEN:
@@ -126,7 +126,7 @@ jobs:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
-          token: ${{ secrets.ORG_PAT }}
+          token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Start review timer
         id: timer
@@ -195,7 +195,7 @@ jobs:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
-          token: ${{ secrets.ORG_PAT }}
+          token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Download prepare artifacts
         uses: actions/download-artifact@v4
@@ -329,7 +329,7 @@ jobs:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
-          token: ${{ secrets.ORG_PAT }}
+          token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Download prepare artifacts
         uses: actions/download-artifact@v4
@@ -373,7 +373,7 @@ jobs:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
-          token: ${{ secrets.ORG_PAT }}
+          token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Download prepare artifacts
         uses: actions/download-artifact@v4
@@ -387,7 +387,7 @@ jobs:
         env:
           SECRET_ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
           SECRET_ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
-          SECRET_ORG_PAT: ${{ secrets.ORG_PAT }}
+          SECRET_ORG_PAT: ${{ secrets.ORG_PAT || github.token }}
         run: bash _agentic_review/scripts/run-docker.sh
 
       - name: Upload Docker scan artifacts
@@ -410,12 +410,12 @@ jobs:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
-          token: ${{ secrets.ORG_PAT }}
+          token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Fetch SonarQube
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.ORG_PAT }}
+          GH_TOKEN: ${{ secrets.ORG_PAT || github.token }}
         run: |
           mkdir -p "${AGENTIC_TMP}"
           bash _agentic_review/scripts/run-sonar.sh
@@ -440,7 +440,7 @@ jobs:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
           path: _agentic_review
-          token: ${{ secrets.ORG_PAT }}
+          token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Download prepare artifacts
         uses: actions/download-artifact@v4
