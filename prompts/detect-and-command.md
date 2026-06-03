@@ -81,6 +81,16 @@ Return ONLY valid JSON (no markdown fences):
     {"cmd": "cd ${WORKDIR} && pnpm build", "purpose": "Type-check and bundle", "confidence": "high"},
     {"cmd": "cd ${WORKDIR} && pnpm test -- --ci", "purpose": "Run vitest in CI mode", "confidence": "medium"}
   ],
+  "dependency_audit": {
+    "cmd": "cd ${WORKDIR} && npm audit --production",
+    "purpose": "Scan production dependencies for known CVEs"
+  },
+  "minimum_check_coverage": {
+    "summary": "Lint and tests configured; build covered.",
+    "categories": [
+      {"id": "lint", "label": "ESLint", "repo_configured": true, "pipeline_planned": true, "recommendation": "", "notes": ""}
+    ]
+  },
   "runtime_requirements": {
     "node_version": "20",
     "python_version": null,

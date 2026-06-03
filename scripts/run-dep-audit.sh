@@ -16,74 +16,44 @@ echo "└───────────────────────�
 echo ""
 
 AUDIT_RESULTS=""
-STACK=$(jq -r '.stack.language // "unknown"' ${AGENTIC_TMP}/ai-commands.json 2>/dev/null)
-PKG_MGR=$(jq -r '.stack.package_manager // "unknown"' ${AGENTIC_TMP}/ai-commands.json 2>/dev/null)
+WORKDIR="${GITHUB_WORKSPACE:-$PWD}"
+export WORKDIR
 
-case "$PKG_MGR" in
-  npm|pnpm|yarn)
-    echo "  Running npm audit..."
-    AUDIT_OUTPUT=$(npm audit --production 2>&1) && AUDIT_EXIT=0 || AUDIT_EXIT=$?
-    if [[ $AUDIT_EXIT -ne 0 ]]; then
-      VULN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Severity:" 2>/dev/null || echo "?")
-      echo "  ⚠ Found vulnerabilities"
-      AUDIT_RESULTS="### Dependency Audit (npm) -- ⚠ Vulnerabilities Found"$'\n'
-      AUDIT_RESULTS+='```'$'\n'
-      AUDIT_RESULTS+="${AUDIT_OUTPUT:0:3000}"$'\n'
-      AUDIT_RESULTS+='```'$'\n\n'
-    else
-      echo "  ✅ No known vulnerabilities"
-      AUDIT_RESULTS="### Dependency Audit (npm) -- ✅ PASSED"$'\n\n'
-    fi
-    ;;
-  pip)
-    if command -v pip-audit &>/dev/null || pip install pip-audit -q 2>/dev/null; then
-      echo "  Running pip-audit..."
-      AUDIT_OUTPUT=$(pip-audit 2>&1) && AUDIT_EXIT=0 || AUDIT_EXIT=$?
-      if [[ $AUDIT_EXIT -ne 0 ]]; then
-        echo "  ⚠ Found vulnerabilities"
-        AUDIT_RESULTS="### Dependency Audit (pip) -- ⚠ Vulnerabilities Found"$'\n'
-        AUDIT_RESULTS+='```'$'\n'
-        AUDIT_RESULTS+="${AUDIT_OUTPUT:0:3000}"$'\n'
-        AUDIT_RESULTS+='```'$'\n\n'
-      else
-        echo "  ✅ No known vulnerabilities"
-        AUDIT_RESULTS="### Dependency Audit (pip) -- ✅ PASSED"$'\n\n'
-      fi
-    else
-      echo "  Skipping pip-audit (not available)"
-      AUDIT_RESULTS="### Dependency Audit (pip) -- SKIPPED"$'\n\n'
-    fi
-    ;;
-  *)
-    if [[ -f go.mod ]]; then
-      if command -v govulncheck &>/dev/null || go install golang.org/x/vuln/cmd/govulncheck@latest 2>/dev/null; then
-        echo "  Running govulncheck..."
-        AUDIT_OUTPUT=$(govulncheck ./... 2>&1) && AUDIT_EXIT=0 || AUDIT_EXIT=$?
-        if [[ $AUDIT_EXIT -ne 0 ]]; then
-          AUDIT_RESULTS="### Dependency Audit (go) -- ⚠ Vulnerabilities Found"$'\n```\n'"${AUDIT_OUTPUT:0:3000}"$'\n```\n\n'
-        else
-          AUDIT_RESULTS="### Dependency Audit (go) -- ✅ PASSED"$'\n\n'
-        fi
-      else
-        AUDIT_RESULTS="### Dependency Audit (go) -- SKIPPED"$'\n\n'
-      fi
-    elif [[ -f Cargo.toml ]]; then
-      if command -v cargo-audit &>/dev/null || cargo install cargo-audit --quiet 2>/dev/null; then
-        echo "  Running cargo audit..."
-        AUDIT_OUTPUT=$(cargo audit 2>&1) && AUDIT_EXIT=0 || AUDIT_EXIT=$?
-        if [[ $AUDIT_EXIT -ne 0 ]]; then
-          AUDIT_RESULTS="### Dependency Audit (cargo) -- ⚠ Vulnerabilities Found"$'\n```\n'"${AUDIT_OUTPUT:0:3000}"$'\n```\n\n'
-        else
-          AUDIT_RESULTS="### Dependency Audit (cargo) -- ✅ PASSED"$'\n\n'
-        fi
-      else
-        AUDIT_RESULTS="### Dependency Audit (cargo) -- SKIPPED"$'\n\n'
-      fi
-    else
-      echo "  No dependency audit available for: $PKG_MGR"
-      AUDIT_RESULTS="### Dependency Audit -- SKIPPED (unsupported: $PKG_MGR)"$'\n\n'
-    fi
-    ;;
-esac
+AUDIT_CMD=""
+AUDIT_PURPOSE=""
+if [[ -f "${AGENTIC_TMP}/ai-commands.json" ]]; then
+  AUDIT_CMD=$(jq -r '.dependency_audit.cmd // empty' "${AGENTIC_TMP}/ai-commands.json" 2>/dev/null)
+  AUDIT_PURPOSE=$(jq -r '.dependency_audit.purpose // "Dependency audit"' "${AGENTIC_TMP}/ai-commands.json" 2>/dev/null)
+fi
+
+if [[ -z "$AUDIT_CMD" || "$AUDIT_CMD" == "null" ]]; then
+  echo "  No dependency_audit command from Pass 1 — skipping"
+  AUDIT_RESULTS="### Dependency Audit -- SKIPPED (not configured by Pass 1 for this repository)"$'\n\n'
+  echo "$AUDIT_RESULTS" > "${AGENTIC_TMP}/audit-results.txt"
+  exit 0
+fi
+
+AUDIT_CMD="${AUDIT_CMD//\$\{WORKDIR\}/$WORKDIR}"
+AUDIT_CMD="${AUDIT_CMD//\$WORKDIR/$WORKDIR}"
+
+echo "  ${AUDIT_PURPOSE}"
+echo "  > ${AUDIT_CMD}"
+AUDIT_OUTPUT=$(eval "$AUDIT_CMD" 2>&1) && AUDIT_EXIT=0 || AUDIT_EXIT=$?
+
+if [[ $AUDIT_EXIT -ne 0 ]]; then
+  echo "  ⚠ Audit reported issues or failures (exit ${AUDIT_EXIT})"
+  AUDIT_RESULTS="### Dependency Audit -- ⚠ Issues or failures"$'\n'
+  AUDIT_RESULTS+='```'$'\n'
+  AUDIT_RESULTS+='$ '"${AUDIT_CMD}"$'\n'
+  AUDIT_RESULTS+="${AUDIT_OUTPUT:0:3000}"$'\n'
+  AUDIT_RESULTS+='```'$'\n\n'
+else
+  echo "  ✅ Audit completed successfully"
+  AUDIT_RESULTS="### Dependency Audit -- ✅ PASSED"$'\n'
+  AUDIT_RESULTS+='```'$'\n'
+  AUDIT_RESULTS+='$ '"${AUDIT_CMD}"$'\n'
+  AUDIT_RESULTS+="${AUDIT_OUTPUT:0:1500}"$'\n'
+  AUDIT_RESULTS+='```'$'\n\n'
+fi
 
 echo "$AUDIT_RESULTS" > "${AGENTIC_TMP}/audit-results.txt"

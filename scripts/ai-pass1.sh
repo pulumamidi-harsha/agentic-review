@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
 if [[ "$REVIEW_TYPE" == "security" ]]; then
-  echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"runtime_requirements":{}}' > "${AGENTIC_TMP}/ai-commands.json"
+  echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"dependency_audit":{"cmd":null,"purpose":""},"minimum_check_coverage":{"summary":"Skipped (security review mode)","categories":[]},"runtime_requirements":{}}' > "${AGENTIC_TMP}/ai-commands.json"
   for v in node python go ruby java dotnet php elixir terraform; do
     write_github_output "${v}_version" ""
   done
@@ -12,7 +12,7 @@ fi
 
 if [[ -z "${AI_API_ENDPOINT:-}" || -z "${AI_API_KEY:-}" ]]; then
   echo "::error::AI_API_ENDPOINT or AI_API_KEY secret is not configured."
-  echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"runtime_requirements":{}}' > "${AGENTIC_TMP}/ai-commands.json"
+  echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"dependency_audit":{"cmd":null,"purpose":""},"minimum_check_coverage":{"summary":"Skipped (AI not configured)","categories":[]},"runtime_requirements":{}}' > "${AGENTIC_TMP}/ai-commands.json"
   exit 0
 fi
 
@@ -29,6 +29,8 @@ if [[ -n "${PR_SIZE:-}" || -n "${DIFF_LINES:-}" ]]; then
 - Size class: ${PR_SIZE:-unknown}
 - Diff lines (truncated to max_diff_lines=${MAX_DIFF_LINES}): ${DIFF_LINES:-unknown}
 - Changed files (approx): ${CHANGED_FILES:-unknown}
+- Pipeline review_type: ${REVIEW_TYPE:-full}
+- Separate pipeline jobs (not in check_commands): dependency audit, security/hygiene scans, SonarQube poll, optional Docker/Trivy when configured
 "
 fi
 
@@ -51,13 +53,10 @@ ${FILE_TREE}
 ${CONFIG_FILES}
 ${PAYLOAD_SECTION}
 
-Analyze this repository (monorepo-aware). Detect all stacks. Emit setup_commands and check_commands.
-Every cmd MUST start with \"cd \${WORKDIR} && \" or \"cd \${WORKDIR}/<subdir> && \".
-Examples:
-- cd \${WORKDIR} && pnpm install
-- cd \${WORKDIR}/backend && pytest"
+Analyze this repository (monorepo-aware). Return the full JSON schema from the system prompt: stack, stacks, setup_commands, check_commands, dependency_audit, minimum_check_coverage, runtime_requirements, payload_analysis.
+Every cmd MUST start with \"cd \${WORKDIR} && \" or \"cd \${WORKDIR}/<subdir> && \"."
 
-if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-pass1-raw.txt" "$SYSTEM_PROMPT" "$USER_MSG" 0 4096; then
+if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-pass1-raw.txt" "$SYSTEM_PROMPT" "$USER_MSG" 0 6144; then
   AI_OUTPUT=$(cat "${AGENTIC_TMP}/ai-pass1-raw.txt")
   CLEANED=$(echo "$AI_OUTPUT" | sed 's/^```json//;s/^```//;s/```$//')
   if echo "$CLEANED" | jq '.' > "${AGENTIC_TMP}/ai-commands.json" 2>/dev/null; then
@@ -67,8 +66,10 @@ if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-pass1-raw.txt" "$SYSTEM_P
     echo "$CLEANED" > "${AGENTIC_TMP}/ai-commands.json"
   fi
 else
-  echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"runtime_requirements":{}}' > "${AGENTIC_TMP}/ai-commands.json"
+  echo '{"stack":{"language":"unknown"},"setup_commands":[],"check_commands":[],"dependency_audit":{"cmd":null,"purpose":""},"minimum_check_coverage":{"summary":"Pass 1 failed","categories":[]},"runtime_requirements":{}}' > "${AGENTIC_TMP}/ai-commands.json"
 fi
+
+bash "${SCRIPT_DIR}/format-check-coverage.sh"
 
 jq '.stack' "${AGENTIC_TMP}/ai-commands.json" 2>/dev/null || true
 

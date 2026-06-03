@@ -45,6 +45,7 @@ OUTPUT QUALITY:
 - Every issue cited in summary MUST appear in issues[] with file, line (if known), title, description, suggestion, is_pr_change.
 - Do not hallucinate: if you cannot point to diff evidence, do not report the issue.
 - positives[] and suggestions[] are constructive; suggestions are non-blocking.
+- When minimum check coverage reports gaps (missing lint/test scripts, no eslint config, etc.), add clear, actionable items to suggestions[] and repo_health.recommendations[] — these are repo hygiene gaps, NOT automatic reject reasons unless the PR removes existing checks.
 - confidence: 0.0–1.0 reflecting how complete your diff visibility was.
 
 Return ONLY valid JSON (no markdown fences):

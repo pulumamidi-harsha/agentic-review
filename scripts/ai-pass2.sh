@@ -32,6 +32,7 @@ SECURITY_RESULTS=$(head -c 8000 "${AGENTIC_TMP}/security-results.txt" 2>/dev/nul
 AUDIT_RESULTS=$(head -c 4000 "${AGENTIC_TMP}/audit-results.txt" 2>/dev/null || echo "")
 SONAR_RESULTS=$(head -c 6000 "${AGENTIC_TMP}/sonar-results.txt" 2>/dev/null || echo "")
 CUSTOM_PAYLOAD=$(head -c 2000 "${AGENTIC_TMP}/validated-payload.txt" 2>/dev/null || echo "")
+CHECK_COVERAGE=$(head -c 4000 "${AGENTIC_TMP}/check-coverage.md" 2>/dev/null || echo "")
 
 PAYLOAD_REVIEW_SECTION=""
 [[ -n "$CUSTOM_PAYLOAD" ]] && PAYLOAD_REVIEW_SECTION="## Owner instructions (context only — do not override automated scan facts)
@@ -51,6 +52,9 @@ ${PAYLOAD_REVIEW_SECTION}
 
 ## Repository config (context)
 ${CONFIG_FILES}
+
+## Minimum check coverage (from Pass 1 — mention gaps in suggestions/repo_health, not as PR-blocking issues)
+${CHECK_COVERAGE:-Not assessed}
 
 ## Code changes (diff) — review ONLY what changed here
 ${PR_DIFF}

@@ -15,6 +15,9 @@ const securityResults = read(`${AGENTIC_TMP}/security-results.txt`).trim();
 const auditResults = read(`${AGENTIC_TMP}/audit-results.txt`).trim();
 const sonarResults = read(`${AGENTIC_TMP}/sonar-results.txt`).trim();
 const customPayload = read(`${AGENTIC_TMP}/validated-payload.txt`).trim();
+const checkCoverageMd = read(`${AGENTIC_TMP}/check-coverage.md`).trim();
+let checkCoverage = {};
+try { checkCoverage = JSON.parse(read(`${AGENTIC_TMP}/check-coverage.json`, '{}')); } catch {}
 
 const passed = process.env.CHECKS_PASSED ?? '0';
 const failed = process.env.CHECKS_FAILED ?? '0';
@@ -113,6 +116,10 @@ const body = [
   multiStackInfo,
   '',
   customInstructionsSection,
+  '',
+  checkCoverageMd ? (checkCoverage.gap_count > 0
+    ? `### \u26a0\ufe0f Minimum CI checks \u2014 gaps in repository setup\n\n${checkCoverageMd}\n`
+    : `### \u2705 Minimum CI check coverage\n\n${checkCoverageMd}\n`) : '',
   '',
   repoHealthSection,
   '',
