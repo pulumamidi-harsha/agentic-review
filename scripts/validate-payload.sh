@@ -38,6 +38,10 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   [[ -z "$line" ]] && continue
   LOWER=$(echo "$line" | tr '[:upper:]' '[:lower:]')
 
+  if echo "$LOWER" | grep -qE "(cypress|cy:run|cy:open|playwright test|wdio|selenium|testcafe|nightwatch|protractor|run e2e|e2e test|end.to.end test|end-to-end test|integration test.*run|smoke test.*run)"; then
+    REJECTED="${REJECTED}    REJECTED (E2E/out-of-scope for agentic-review): ${line}\n"
+    continue
+  fi
   if echo "$LOWER" | grep -qE "(don.?t run|do not run|skip|ignore|disable|never run|exclude|bypass|suppress|hide|don.?t check|do not check|don.?t scan|do not scan|don.?t report|do not report)"; then
     REJECTED="${REJECTED}    REJECTED (suppression attempt): ${line}\n"
     continue

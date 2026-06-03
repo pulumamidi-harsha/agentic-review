@@ -30,11 +30,23 @@ SETUP_FAILED=false
 WORKDIR="$PWD"
 export WORKDIR
 
+# Safety net: never run E2E/browser/integration tests (Pass 1 should omit them; filter if model slips).
+is_out_of_scope_cmd() {
+  local cmd="$1" purpose="$2"
+  local blob="${cmd} ${purpose}"
+  echo "$blob" | grep -qiE \
+    'cypress[[:space:]]+run|cy:run|cy:open|playwright[[:space:]]+test|npx[[:space:]]+playwright|wdio|selenium|testcafe|nightwatch|protractor|test:e2e|e2e:test|npm[[:space:]]+run[[:space:]]+e2e|pnpm[[:space:]]+e2e|yarn[[:space:]]+e2e|/e2e/|/cypress/|cypress\.config|playwright\.config|end-to-end|end[[:space:]]to[[:space:]]end|[[:space:]]e2e[[:space:]]'
+}
+
 echo "--- SETUP: Installing dependencies ---"
 SETUP_CMDS=$(jq -r '.setup_commands[]?.cmd // empty' ${AGENTIC_TMP}/ai-commands.json)
 REPO_ROOT="$PWD"
 while IFS= read -r cmd; do
   [[ -z "$cmd" ]] && continue
+  if is_out_of_scope_cmd "$cmd" "setup"; then
+    echo "  SKIP (out of scope — E2E/integration): $cmd"
+    continue
+  fi
   # Substitute ${WORKDIR} with actual path; also handle commands without it
   cmd="${cmd//\$\{WORKDIR\}/$WORKDIR}"
   cmd="${cmd//\$WORKDIR/$WORKDIR}"
@@ -63,6 +75,11 @@ for i in $(seq 0 $((CHECK_COUNT - 1))); do
   if [[ "$CONFIDENCE" == "low" ]]; then
     echo "  SKIP (low confidence): ${PURPOSE}"
     RESULTS+="### ${PURPOSE} -- SKIPPED (low confidence)"$'\n\n'
+    continue
+  fi
+  if is_out_of_scope_cmd "$CMD" "$PURPOSE"; then
+    echo "  SKIP (out of scope — E2E/integration/browser tests not run in agentic-review): ${PURPOSE}"
+    RESULTS+="### ${PURPOSE} -- SKIPPED (out of scope: E2E/integration requires full stack; run in dedicated CI)"$'\n\n'
     continue
   fi
 

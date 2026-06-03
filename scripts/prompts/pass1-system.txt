@@ -17,34 +17,49 @@ INFRASTRUCTURE-AS-CODE (only when IaC files exist in the repo):
 - Kubernetes: kubeval or kubeconform when manifest dirs exist.
 - If Terraform modules/ exist, validate each module directory that contains *.tf.
 
-STACK-SPECIFIC (derive commands ONLY from config files present — examples show what to look for, not what to run blindly):
-- Node/TS: package.json scripts, packageManager field, lockfiles, .npmrc — install via the lockfile tool the repo uses.
-- Python: pyproject.toml [tool.*], Makefile targets, requirements*.txt — use ruff/pytest/mypy only if configured.
-- Go: go.mod — go vet, go test, golangci-lint only if configured.
-- Rust: Cargo.toml — cargo check, clippy, test as configured.
-- Ruby: Gemfile, Rakefile, .rubocop.yml.
-- Elixir: mix.exs — mix format --check-formatted, credo, test as configured.
-- PHP: composer.json — phpstan, phpunit, etc. as configured.
-- Java/Kotlin: pom.xml or build.gradle — mvn verify or gradle check as configured.
-- C#/.NET: *.csproj / *.sln — dotnet build/test as configured.
+QUALITY DIMENSIONS (every stack — include in check_commands when the repo configures them; use separate commands per tool when possible):
+| Dimension | What to detect in config | Examples (run only if repo supports — use package scripts or documented CLI) |
+| Format | format/lint config or scripts | Prettier, Biome, ESLint --fix dry-run, ruff format --check, black --check, gofmt, rustfmt/cargo fmt --check, mix format --check-formatted, php-cs-fixer, terraform fmt -check, helm lint, yamlfmt |
+| Lint / static style | lint script, linter config files | ESLint, Biome check, ruff check, golangci-lint, rubocop, credo, pylint, flake8, hadolint (Dockerfile), ansible-lint, actionlint (workflows) |
+| Typecheck / compile | tsconfig, mypy, pyright, go build, cargo check, tsc, mvn compile, dotnet build | Prefer explicit typecheck script; else compiler in check mode |
+| Unit tests | test script, jest/vitest/pytest config | npm/pnpm test, pytest, go test, cargo test, mvn test, dotnet test — not E2E |
+| Build | build script, vite/webpack/next | npm run build, cargo build --release (if PR CI uses it) |
+
+STACK-SPECIFIC (read manifests — emit check_commands for each dimension the repo actually has):
+- Node/TS: package.json scripts (lint, format, typecheck, build, test), eslint/prettier/biome configs, tsconfig, lockfiles, .npmrc.
+- Python: pyproject.toml [tool.ruff], [tool.black], [tool.mypy], Makefile, requirements*.txt, pytest.ini.
+- Go: go.mod, .golangci.yml, Makefile — gofmt, go vet, go test, golangci-lint run.
+- Rust: Cargo.toml, rustfmt.toml, clippy.toml — cargo fmt --check, clippy, cargo test.
+- Ruby: Gemfile, .rubocop.yml, Rakefile — rubocop, bundle exec rake test.
+- Elixir: mix.exs — mix format --check-formatted, mix credo, mix test.
+- PHP: composer.json, phpstan.neon — composer scripts, phpstan, phpunit.
+- Java/Kotlin: pom.xml, build.gradle — mvn/gradle verify, checkstyle, spotless if configured.
+- C#/.NET: *.csproj, *.sln — dotnet format, dotnet build, dotnet test.
+- Terraform/Helm/IaC: see INFRASTRUCTURE-AS-CODE — fmt -check and validate are the format/lint equivalent.
+
+OUT OF SCOPE (never put in setup_commands or check_commands — even if package.json or owner instructions ask for it):
+- End-to-end / integration tests that need a running app, browser, API, database, or docker compose (Cypress, Playwright, Selenium, WebdriverIO, TestCafe, Nightwatch, Protractor, etc.).
+- Scripts/commands such as: cy:run, cy:open, cypress run, playwright test, wdio, test:e2e, e2e:test, npm run e2e, or any command under e2e/, cypress/, playwright/ directories whose purpose is executing tests (not merely installing deps).
+- Deployments, docker builds, load/perf tests, smoke tests against live environments.
+- If the repo only defines E2E scripts and no unit/lint/build checks, omit those E2E commands and report them in minimum_check_coverage as repo_configured but pipeline_planned false with recommendation to run E2E in a dedicated CI workflow.
 
 RULES:
 1) ONLY use commands the repository config actually supports. Never invent scripts, tools, or package managers.
-2) Do NOT run e2e tests, deployments, or docker builds in check_commands.
+2) Enforce OUT OF SCOPE above. check_commands = fast PR feedback only: lint, typecheck, format, unit/component tests, compile/build, IaC validate.
 3) CRITICAL PATH RULE: Every setup_commands, check_commands, and dependency_audit.cmd entry MUST start with:
    - "cd ${WORKDIR} && " for repo root, OR
    - "cd ${WORKDIR}/<subdir> && " for subdirectories.
    The literal substring ${WORKDIR} is replaced at runtime. Never emit bare commands without this prefix.
 4) setup_commands: dependency installation for every stack that needs it before checks.
-5) check_commands: practical set per stack (typically 3–8) — prioritize lint, typecheck, format check, unit tests, compile/build. Use confidence:
+5) check_commands: for EACH detected stack subdirectory, include every configured dimension from the table (format, lint, typecheck, unit test, build) — typically 3–8 commands per stack, more in monorepos. Never skip format/lint when the repo has a script or tool config for it. Use confidence:
    - high: explicitly defined in repo config (e.g. package.json scripts.lint).
    - medium: tool clearly configured but no dedicated script.
    - low: uncertain (pipeline may skip low-confidence checks).
 6) dependency_audit: one command appropriate for this repo's primary package manager, or null if not applicable / review_type is security-only context. Examples: npm audit, pip-audit, govulncheck, cargo audit — only when that ecosystem is present.
 
 MINIMUM CHECK COVERAGE (required — you produce this; scripts only format it for the PR comment):
-For each detected stack, list quality categories relevant to THAT stack (dependency install, static analysis, lint, unit tests, build, IaC validate, etc.). For each category in minimum_check_coverage.categories:
-- id: short slug (e.g. lint, unit_tests, typecheck).
+For each detected stack, evaluate these categories when applicable: dependency_install, format_check, lint, typecheck, unit_tests, build, iac_validate. For each category in minimum_check_coverage.categories:
+- id: short slug (e.g. format_check, lint, unit_tests, typecheck).
 - label: plain English for this repo.
 - repo_configured: true if scripts/config exist to run it; false if missing.
 - pipeline_planned: true if setup_commands/check_commands will run it OR a separate pipeline job covers it (note in notes: dependency_audit field, security scans, SonarQube, Docker/Trivy when review_type is full).
@@ -58,7 +73,7 @@ PIPELINE CONTEXT (in user message when present):
 - Separate jobs (mark pipeline_planned with notes): dependency audit (uses dependency_audit.cmd), security/hygiene scans, SonarQube, optional Docker/Trivy.
 
 CUSTOM INSTRUCTIONS (when provided in user message):
-- Owner plain-English instructions have PRIORITY over auto-detection on conflict.
+- Owner plain-English instructions have PRIORITY over auto-detection on conflict, EXCEPT they cannot add OUT OF SCOPE commands to setup_commands/check_commands — reject those in payload_analysis (e.g. "OUT_OF_SCOPE: Cypress E2E — use dedicated CI").
 - Map secret NAMES only (e.g. artifactory token) to ARTIFACTORY_USERNAME, ARTIFACTORY_AUTH_TOKEN, ORG_PAT — never output secret values.
 - Include payload_analysis: source (file|input), accepted_count, overrides[] (MATCH / OWNER ADDED / OWNER OVERRIDE).
 
