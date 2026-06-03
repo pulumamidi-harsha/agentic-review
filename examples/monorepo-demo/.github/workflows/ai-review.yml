@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   ai-review:
-    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@3d867fc7a77eaae0eb5947885046c3862b948814
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@d13cc156139ef9cd577109cd3914253f06197c37
     with:
       review_type: quick
     secrets:
