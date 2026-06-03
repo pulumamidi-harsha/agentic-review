@@ -1,10 +1,11 @@
 const fs = require('fs');
+const path = require('path');
 
 const AGENTIC_TMP = process.env.AGENTIC_TMP || '/tmp/agentic-review';
 const COMMENT_MARKER = '<!-- agentic-review:comment -->';
 
-function read(path, fallback = '') {
-  try { return fs.readFileSync(path, 'utf8'); } catch { return fallback; }
+function read(filePath, fallback = '') {
+  try { return fs.readFileSync(filePath, 'utf8'); } catch { return fallback; }
 }
 
 function details(summary, content, open = false) {
@@ -18,12 +19,9 @@ function subsection(title, content) {
   return `#### ${title}\n\n${String(content).trim()}\n`;
 }
 
-/** Normalize LLM fields that may be string, array, or object. */
 function toBulletLines(value) {
   if (value == null || value === '') return [];
-  if (Array.isArray(value)) {
-    return value.flatMap(v => toBulletLines(v));
-  }
+  if (Array.isArray(value)) return value.flatMap(v => toBulletLines(v));
   if (typeof value === 'object') {
     return Object.entries(value).map(([k, v]) => `- ${k}: ${v}`);
   }
@@ -38,6 +36,112 @@ function shortSummary(text, maxLen = 280) {
   return (last > 100 ? cut.slice(0, last + 1) : cut) + '…';
 }
 
+function formatDuration(seconds) {
+  if (seconds == null || Number.isNaN(seconds) || seconds < 0) return '—';
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem ? `${m}m ${rem}s` : `${m}m`;
+}
+
+function getDurationSeconds() {
+  const timerPaths = [
+    process.env.TIMER_FILE,
+    path.join(process.env.RUNNER_TEMP || '/tmp', 'timer.txt'),
+  ].filter(Boolean);
+
+  for (const p of timerPaths) {
+    try {
+      const start = parseInt(read(p).trim(), 10);
+      if (start > 0) return Math.round(Date.now() / 1000) - start;
+    } catch { /* try next */ }
+  }
+
+  if (process.env.TIMER_START) {
+    const start = parseInt(process.env.TIMER_START, 10);
+    if (start > 0) return Math.round(Date.now() / 1000) - start;
+  }
+
+  if (process.env.GITHUB_RUN_STARTED_AT) {
+    const started = Date.parse(process.env.GITHUB_RUN_STARTED_AT);
+    if (!Number.isNaN(started)) return Math.round((Date.now() - started) / 1000);
+  }
+
+  return null;
+}
+
+function parseFailedChecks(text) {
+  const failed = [];
+  for (const m of String(text).matchAll(/^### (.+?) -- FAILED/gm)) {
+    failed.push(m[1].trim());
+  }
+  return failed;
+}
+
+function parseSkippedChecks(text) {
+  const skipped = [];
+  for (const m of String(text).matchAll(/^### (.+?) -- SKIPPED/gm)) {
+    skipped.push(m[1].trim());
+  }
+  return skipped;
+}
+
+/** Remove summary line from check-results — stats shown once in run summary. */
+function stripCheckResultsHeader(text) {
+  let t = String(text).trim();
+  t = t.replace(/^\*\*Summary:\*\*[^\n]*\n+/i, '');
+  return t.trim();
+}
+
+function buildCiCoverageBlock(data) {
+  if (!data || !Object.keys(data).length) return '';
+
+  const expectations = data.expectations || [];
+  const gaps = expectations.filter(e => e.is_gap);
+  const parts = [];
+
+  if (data.summary) parts.push(String(data.summary).trim());
+
+  if (gaps.length) {
+    parts.push('', '**Recommended — add these CI checks:**');
+    gaps.forEach(g => {
+      const rec = g.recommendation || 'Configure this in your repo and CI pipeline.';
+      parts.push(`- **${g.label}** — ${rec}`);
+    });
+  } else if (expectations.length && data.status === 'complete') {
+    parts.push('', '_Expected CI categories (lint, tests, build, etc.) are configured or covered._');
+  } else if (expectations.length) {
+    parts.push('', '_See coverage matrix below._');
+  }
+
+  const showMatrix = expectations.length > 0 && (gaps.length > 0 || data.status !== 'complete');
+  if (showMatrix) {
+    parts.push(
+      '',
+      '| Check | In repo | This run |',
+      '|-------|:-------:|:--------:|',
+      ...expectations.map(e =>
+        `| ${e.label} | ${e.repo_configured ? '✅' : '—'} | ${e.pipeline_planned ? '✅' : '—'} |`
+      ),
+    );
+  }
+
+  return parts.join('\n').trim();
+}
+
+function workflowRunUrl() {
+  const server = process.env.GITHUB_SERVER_URL || 'https://github.com';
+  const repo = process.env.GITHUB_REPOSITORY;
+  const runId = process.env.GITHUB_RUN_ID;
+  if (!repo || !runId) return null;
+  return `${server}/${repo}/actions/runs/${runId}`;
+}
+
+function severityEmoji(sev) {
+  return { critical: '🚨', high: '🔴', medium: '🟡', low: '🔵', info: 'ℹ️' }[sev] || '·';
+}
+
 let review = read(`${AGENTIC_TMP}/ai-review.txt`, '{}');
 let checks = read(`${AGENTIC_TMP}/check-results.txt`, 'No results');
 let commands = {};
@@ -48,6 +152,8 @@ const auditResults = read(`${AGENTIC_TMP}/audit-results.txt`).trim();
 const sonarResults = read(`${AGENTIC_TMP}/sonar-results.txt`).trim();
 const customPayload = read(`${AGENTIC_TMP}/validated-payload.txt`).trim();
 const checkCoverageMd = read(`${AGENTIC_TMP}/check-coverage.md`).trim();
+let coverageData = {};
+try { coverageData = JSON.parse(read(`${AGENTIC_TMP}/check-coverage.json`, '{}')); } catch {}
 const pass1SummaryMd = read(`${AGENTIC_TMP}/pass1-summary.md`).trim();
 const instructionSource = read(`${AGENTIC_TMP}/instruction-source.txt`, 'none').trim();
 
@@ -62,9 +168,10 @@ const diffLines = process.env.DIFF_LINES || '0';
 const changedFiles = process.env.CHANGED_FILES || '0';
 const reviewType = process.env.REVIEW_TYPE || 'full';
 
-const startTime = parseInt(process.env.TIMER_START || '0', 10);
-const duration = startTime ? Math.round(Date.now() / 1000) - startTime : 0;
-const durationStr = duration > 60 ? `${Math.floor(duration / 60)}m ${duration % 60}s` : `${duration}s`;
+const durationStr = formatDuration(getDurationSeconds());
+const runUrl = workflowRunUrl();
+const failedChecks = parseFailedChecks(checks);
+const skippedChecks = parseSkippedChecks(checks);
 
 let reviewData = {};
 try {
@@ -75,34 +182,52 @@ try {
 }
 
 const stackInfo = commands.stack
-  ? `${commands.stack.language || '?'} / ${commands.stack.framework || '?'} / ${commands.stack.package_manager || '?'}`
+  ? `${commands.stack.language || '?'} · ${commands.stack.framework || '?'} · ${commands.stack.package_manager || '?'}`
   : 'Unknown';
 
 const payloadAnalysis = commands.payload_analysis || null;
 
+const setupCount = (commands.setup_commands || []).length;
+const checkCount = (commands.check_commands || []).length;
+
+const checksRan = Number(passed) + Number(failed);
+const checksSkipped = skippedChecks.length;
+const checksPlanned = checkCount;
+
 const cmdList = (commands.check_commands || [])
-  .map((c, i) => `${i + 1}. \`${c.cmd}\`\n   - ${c.purpose} [${c.confidence}]`)
+  .map((c, i) => `${i + 1}. \`${c.cmd}\` — ${c.purpose} _(${c.confidence})_`)
   .join('\n');
 
 const verdictMap = {
-  approve: ['\u2705', 'APPROVED', 'No blocking issues in the files you changed.'],
-  needs_work: ['\u26a0\ufe0f', 'NEEDS WORK', 'Address the issues below in your changed files before merge.'],
-  reject: ['\ud83d\udd34', 'CHANGES REQUIRED', 'Blocking issues in your changed files must be fixed.'],
-  comment: ['\u2139\ufe0f', 'REVIEW', 'See findings below.'],
+  approve: ['✅', 'APPROVED', 'No blocking issues in the files you changed.'],
+  needs_work: ['⚠️', 'NEEDS WORK', 'Fix the issues in your changed files before merge.'],
+  reject: ['🔴', 'CHANGES REQUIRED', 'Blocking issues in your changed files must be fixed.'],
+  comment: ['ℹ️', 'REVIEW', 'See findings below.'],
 };
 const [verdictEmoji, verdictLabel, verdictLead] = verdictMap[reviewData.verdict] || verdictMap.comment;
-const statusEmoji = checksExit === '0' ? '\u2705' : (setupFailed ? '\u26a0\ufe0f' : '\u274c');
 
-const formatIssue = (i) => {
-  const sev = { critical: '\ud83d\udea8', high: '\ud83d\udd34', medium: '\ud83d\udfe1', low: '\ud83d\udd35', info: '\u2139\ufe0f' }[i.severity] || '-';
-  const loc = i.file ? `\`${i.file}${i.line ? ':' + i.line : ''}\`` : '';
-  return `${sev} **${i.title}** ${loc}\n   ${i.description}${i.suggestion ? '\n   \ud83d\udca1 ' + i.suggestion : ''}`;
-};
+function formatChecksSummary() {
+  if (checksPlanned === 0 && checksRan === 0) return 'None configured';
+  const parts = [];
+  if (checksPlanned > 0) parts.push(`${checksPlanned} planned`);
+  parts.push(`${checksRan} run`, `${passed} passed`);
+  if (Number(failed) > 0) parts.push(`${failed} failed`);
+  if (checksSkipped > 0) parts.push(`${checksSkipped} skipped`);
+  return parts.join(' · ');
+}
+
+const checksStatusLine = formatChecksSummary();
+const checksStatus = Number(failed) > 0
+  ? `❌ ${checksStatusLine}`
+  : setupFailed
+    ? `⚠️ ${checksStatusLine} (setup failed)`
+    : checksRan === 0 && checksPlanned === 0
+      ? '— none configured'
+      : `✅ ${checksStatusLine}`;
+const securityStatus = securityExit === '0' ? '✅ clean' : '⚠️ findings';
 
 const prIssues = (reviewData.issues || []).filter(i => i.is_pr_change !== false);
 const otherIssues = (reviewData.issues || []).filter(i => i.is_pr_change === false);
-const issuesInPr = prIssues.map(formatIssue).join('\n\n');
-const issuesOther = otherIssues.map(formatIssue).join('\n\n');
 const filesWithPrIssues = [...new Set(prIssues.map(i => i.file).filter(Boolean))];
 
 const verdictReasons = reviewData.verdict_reasons || [];
@@ -115,84 +240,117 @@ toBulletLines(reviewData.verdict_rationale).forEach(l => {
   verdictWhyLines.push(l.startsWith('-') ? l : `- ${l}`);
 });
 if (prReasons.length) {
-  verdictWhyLines.push('', '**In your diff:**');
   prReasons.forEach(r => verdictWhyLines.push(`- \`${r.file || 'PR'}\`: ${r.reason}`));
 }
 if (outsideReasons.length) {
-  verdictWhyLines.push('', '**Not counted against this PR:**');
+  verdictWhyLines.push('', '_Not counted against this PR:_');
   outsideReasons.forEach(r => verdictWhyLines.push(`- ${r.reason}`));
 }
 
-const verdictBlock = [
-  `> ### ${verdictEmoji} **${verdictLabel}**`,
-  `> ${verdictLead}`,
+const quickLinks = [
+  prIssues.length || reviewData.verdict !== 'approve' ? '[Issues](#issues-in-your-changed-files)' : null,
+  '[Checks & logs](#full-check-output)',
+  '[Repo health](#repository-health)',
+  runUrl ? `[Workflow run](${runUrl})` : null,
+].filter(Boolean).join(' · ');
+
+const verdictSection = [
+  `### ${verdictEmoji} ${verdictLabel}`,
+  '',
+  verdictLead,
   '',
   shortSummary(reviewData.summary) ? `**Summary:** ${shortSummary(reviewData.summary)}` : '',
   prChangedFiles.length
-    ? `**Files you changed:** ${prChangedFiles.map(f => `\`${f}\``).join(', ')}`
+    ? `**Files you changed (${prChangedFiles.length}):** ${prChangedFiles.map(f => `\`${f}\``).join(' · ')}`
     : '',
   filesWithPrIssues.length && reviewData.verdict !== 'approve'
-    ? `**Files with issues to fix:** ${filesWithPrIssues.map(f => `\`${f}\``).join(', ')}`
+    ? `**Fix these files:** ${filesWithPrIssues.map(f => `\`${f}\``).join(' · ')}`
     : '',
-  verdictWhyLines.length ? ['**Why:**', ...verdictWhyLines].join('\n') : '',
+  verdictWhyLines.length ? `\n**Why**\n${verdictWhyLines.join('\n')}` : '',
+].filter(Boolean).join('\n');
+
+const failedChecksAlert = Number(failed) > 0 && failedChecks.length
+  ? `\n> ⚠️ **${failed} of ${checksRan} check(s) failed:** ${failedChecks.map(c => `\`${c}\``).join(' · ')} — expand [Full check output](#full-check-output) for logs.\n`
+  : setupFailed
+    ? '\n> ⚠️ **Dependency setup failed** — check failures may be from missing packages, not your code.\n'
+    : '';
+
+const checkLogBody = stripCheckResultsHeader(checks);
+const checkLogSummary = checksRan > 0
+  ? `_Showing output for ${checksRan} executed check(s).${checksSkipped ? ` ${checksSkipped} skipped (low confidence or out of scope).` : ''}_`
+  : '';
+
+const issuesTable = prIssues.length
+  ? [
+    '| File | Sev | Issue |',
+    '|------|:---:|-------|',
+    ...prIssues.map(i => {
+      const file = i.file ? `\`${i.file}${i.line ? ':' + i.line : ''}\`` : '—';
+      const title = i.suggestion
+        ? `**${i.title}** — ${i.description}<br>💡 ${i.suggestion}`
+        : `**${i.title}** — ${i.description}`;
+      return `| ${file} | ${severityEmoji(i.severity)} | ${title} |`;
+    }),
+  ].join('\n')
+  : '';
+
+const runSummaryTable = [
+  '| | |',
+  '|:---|:---|',
+  `| **Stack** | ${stackInfo} |`,
+  `| **Checks** | ${checksStatus} |`,
+  `| **Security scans** | ${securityStatus} |`,
+  `| **Review mode** | ${reviewType} · ${changedFiles} files · ${diffLines} diff lines |`,
+  `| **Duration** | ${durationStr} |`,
+  runUrl ? `| **Workflow** | [View run #${process.env.GITHUB_RUN_ID || '?'}](${runUrl}) |` : '',
 ].filter(Boolean).join('\n');
 
 const ownerInstructionsBlock = customPayload ? [
   customPayload.split('\n').filter(l => l.trim()).map(l => `> ${l.trim()}`).join('\n'),
   '',
-  '**Priority:** Owner instructions override auto-detection when they conflict.',
-  `- Source: \`${instructionSource}\``,
-  `- Accepted: ${payloadAnalysis?.accepted_count ?? 'all'}`,
+  `- **Source:** \`${instructionSource}\``,
+  `- **Accepted:** ${payloadAnalysis?.accepted_count ?? 'all'}`,
   payloadAnalysis?.overrides?.length
-    ? '\n**Decisions:**\n' + payloadAnalysis.overrides.map(o => `- ${o}`).join('\n')
+    ? `- **Overrides:** ${payloadAnalysis.overrides.join('; ')}`
     : '',
-].join('\n') : '';
+].filter(Boolean).join('\n') : '';
 
-const pass1Block = [
-  '| Item | Value |',
-  '|------|-------|',
-  `| Instruction source | \`${instructionSource}\` |`,
-  `| Setup / check commands | ${(commands.setup_commands || []).length} / ${(commands.check_commands || []).length} |`,
-  `| Dependency audit | ${commands.dependency_audit?.cmd ? 'yes' : 'skipped'} |`,
-  '',
-  '**Setup:**',
-  (commands.setup_commands || []).length
-    ? commands.setup_commands.map((c, i) => `${i + 1}. \`${c.cmd}\` — ${c.purpose}`).join('\n')
+const commandsRunBlock = [
+  `**Setup commands (${setupCount}):**`,
+  setupCount
+    ? (commands.setup_commands || []).map((c, i) => `${i + 1}. \`${c.cmd}\` — ${c.purpose}`).join('\n')
     : '_None_',
   '',
-  '**Checks:**',
+  `**Check commands (${checkCount}):**`,
   cmdList || '_None_',
+  commands.dependency_audit?.cmd
+    ? `\n**Dependency audit:** \`${commands.dependency_audit.cmd}\``
+    : '',
 ].join('\n');
 
+const ciCoverageBlock = buildCiCoverageBlock(coverageData)
+  || (checkCoverageMd ? checkCoverageMd.replace(/^##[^\n]*\n+/, '').trim() : '');
+
 const repoHealth = reviewData.repo_health || {};
-const healthEmoji = { healthy: '\u2705', needs_attention: '\u26a0\ufe0f', critical: '\ud83d\udea8' }[repoHealth.status] || '\u2139\ufe0f';
-const repoHealthBlock = repoHealth.summary ? [
-  `**Status:** ${healthEmoji} ${(repoHealth.status || 'unknown').replace(/_/g, ' ')}`,
-  '',
-  repoHealth.summary,
-  '',
+const healthEmoji = { healthy: '✅', needs_attention: '⚠️', critical: '🚨' }[repoHealth.status] || 'ℹ️';
+const repoHealthBlock = [
+  repoHealth.summary ? `**Status:** ${healthEmoji} ${(repoHealth.status || 'unknown').replace(/_/g, ' ')}\n\n${repoHealth.summary}` : '',
   (repoHealth.issues || []).length
-    ? '**Pre-existing:**\n' + repoHealth.issues.map(i =>
+    ? '\n**Pre-existing issues**\n' + repoHealth.issues.map(i =>
       typeof i === 'string' ? `- ${i}` : `- ${i.title || i.description || ''}`
     ).filter(Boolean).join('\n')
     : '',
   (repoHealth.recommendations || []).length
-    ? '\n**Recommendations:**\n' + repoHealth.recommendations.map(r => `- ${r}`).join('\n')
+    ? '\n**Recommendations**\n' + repoHealth.recommendations.map(r => `- ${r}`).join('\n')
     : '',
-].filter(Boolean).join('\n') : '';
+].filter(Boolean).join('\n');
 
 const positives = (reviewData.positives || []).map(p => `- ${p}`).join('\n');
 const suggestions = (reviewData.suggestions || []).map(s => `- ${s}`).join('\n');
-
-const commandsDetail = [
-  '**Setup:**',
-  (commands.setup_commands || []).length
-    ? commands.setup_commands.map((c, i) => `${i + 1}. \`${c.cmd}\`\n   - ${c.purpose}`).join('\n\n')
-    : '_None_',
-  '',
-  '**Checks:**',
-  cmdList || '_None_',
-].join('\n');
+const issuesOther = otherIssues.map(i => {
+  const loc = i.file ? `\`${i.file}\`` : '';
+  return `- ${severityEmoji(i.severity)} **${i.title}** ${loc} — ${i.description}`;
+}).join('\n');
 
 const securityAndHygiene = [
   securityResults,
@@ -202,53 +360,67 @@ const securityAndHygiene = [
 ].filter(Boolean).join('\n\n---\n\n');
 
 const fullCheckOutput = [
-  subsection('\ud83e\uddea CI analysis', reviewData.check_results_analysis),
-  subsection('\ud83d\udd12 Security analysis', reviewData.security_analysis),
-  subsection('\u2699\ufe0f Pass 1 — commands chosen', pass1Block),
-  subsection('\ud83d\udcca Minimum CI check coverage', checkCoverageMd),
-  subsection('\ud83d\udccb Commands executed', commandsDetail),
-  subsection('\ud83d\udcca Check runner output', checks),
-  subsection('\ud83d\udee1\ufe0f Security & hygiene scans', securityAndHygiene),
+  subsection('🧪 CI analysis', reviewData.check_results_analysis),
+  subsection('🔒 Security analysis', reviewData.security_analysis),
+  subsection('⚙️ Commands run', commandsRunBlock),
+  checkLogBody
+    ? details(
+      `📋 Check logs (${checksRan} run · ${passed} passed · ${failed} failed${checksSkipped ? ` · ${checksSkipped} skipped` : ''})`,
+      [checkLogSummary, checkLogBody].filter(Boolean).join('\n\n'),
+      Number(failed) > 0,
+    )
+    : '',
+  securityAndHygiene.trim()
+    ? subsection('🛡️ Security & hygiene scans', securityAndHygiene)
+    : '',
 ].filter(Boolean).join('\n\n');
 
 const repositoryHealth = [
   repoHealthBlock,
-  issuesOther ? subsection(`\ud83d\udd0d Other findings outside your diff (${otherIssues.length})`, issuesOther) : '',
-  positives ? subsection('\u2705 What\u2019s good (repository)', positives) : '',
-  suggestions ? subsection('\ud83d\udca1 Suggestions (repository)', suggestions) : '',
+  ciCoverageBlock ? subsection('📊 CI check coverage', ciCoverageBlock) : '',
+  issuesOther ? subsection(`🔍 Outside your diff (${otherIssues.length})`, issuesOther) : '',
+  positives ? subsection('✅ What\'s good (repository)', positives) : '',
+  suggestions ? subsection('💡 Suggestions (repository)', suggestions) : '',
 ].filter(Boolean).join('\n\n');
 
 const sizeWarning = prSize === 'very_large'
-  ? `> \u26a0\ufe0f Large PR (${diffLines} lines, ${changedFiles} files).\n`
+  ? `\n> ⚠️ **Large PR** — ${diffLines} lines across ${changedFiles} files. Consider splitting.\n`
   : prSize === 'large'
-  ? `> \ud83d\udcdd ${diffLines} lines, ${changedFiles} files.\n`
+  ? `\n> 📝 ${diffLines} lines · ${changedFiles} files\n`
   : '';
-
-const issueCountPr = prIssues.length;
 
 const body = [
   COMMENT_MARKER,
-  `## \ud83e\udd16 AI Code Review \u2014 ${verdictEmoji} ${verdictLabel}`,
+  `## 🤖 AI Code Review — ${verdictEmoji} ${verdictLabel}`,
   '',
-  verdictBlock,
+  quickLinks ? `**Jump to:** ${quickLinks}` : '',
   '',
-  issueCountPr > 0
-    ? `### \ud83d\udea8 Issues in your changed files (${issueCountPr})\n\n${issuesInPr}\n`
-    : reviewData.verdict !== 'approve'
-      ? `### \ud83d\udea8 Issues in your changed files\n\n_No file-specific issues were listed; see verdict above._\n`
-      : '',
-  customPayload ? details('\ud83d\udccb Owner instructions (this PR)', ownerInstructionsBlock) : '',
+  verdictSection,
+  failedChecksAlert,
   sizeWarning,
-  `| Stack | Checks | Security | Mode | Time |`,
-  `|-------|--------|----------|------|------|`,
-  `| ${stackInfo} | ${statusEmoji} ${passed} ok, ${failed} fail | ${securityExit === '0' ? '\u2705' : '\u26a0\ufe0f'} | ${reviewType} | ${durationStr} |`,
   '',
-  fullCheckOutput.trim() ? details('\ud83d\udcca Full check output', fullCheckOutput) : '',
-  repositoryHealth.trim() ? details('\ud83c\udfe5 Repository health (pre-existing)', repositoryHealth) : '',
-  pass1SummaryMd ? details('\ud83e\udde0 Pipeline plan (Pass 1)', pass1SummaryMd) : '',
+  runSummaryTable,
+  '',
+  prIssues.length
+    ? `### Issues in your changed files (${prIssues.length})\n\n${issuesTable}\n`
+    : reviewData.verdict !== 'approve'
+      ? '### Issues in your changed files\n\n_No file-specific issues listed — see verdict above._\n'
+      : '',
+  customPayload
+    ? `### Owner instructions\n\n${details('Custom rules for this repo', ownerInstructionsBlock)}`
+    : '',
+  fullCheckOutput.trim()
+    ? `### Full check output\n\n${details('Expand — CI analysis, commands, logs, scans', fullCheckOutput)}`
+    : '',
+  repositoryHealth.trim()
+    ? `### Repository health\n\n${details('Expand — CI gaps, pre-existing issues, repo-wide suggestions', repositoryHealth)}`
+    : '',
+  pass1SummaryMd
+    ? `### Pipeline plan\n\n${details('Expand — Pass 1 detection details', pass1SummaryMd)}`
+    : '',
   '',
   '---',
-  `<sub>\ud83e\udd16 <a href="https://github.com/pulumamidi-harsha/agentic-review">agentic-review</a> \u00b7 ${changedFiles} files \u00b7 ${diffLines} diff lines \u00b7 ${durationStr} \u00b7 _This comment is updated each run._</sub>`,
+  `<sub>🤖 <a href="https://github.com/pulumamidi-harsha/agentic-review">agentic-review</a> · updated each run · ${durationStr} total</sub>`,
 ].filter(Boolean).join('\n');
 
 module.exports = { body, reviewData, durationStr, COMMENT_MARKER };

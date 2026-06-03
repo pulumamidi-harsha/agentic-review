@@ -508,12 +508,19 @@ jobs:
           CHECKS_PASSED: ${{ needs.checks.outputs.passed || '0' }}
           CHECKS_FAILED: ${{ needs.checks.outputs.failed || '0' }}
           CHECKS_EXIT: ${{ needs.checks.outputs.exit_code || '0' }}
+          SETUP_FAILED: ${{ needs.checks.result == 'failure' && 'true' || 'false' }}
           DOCKER_FOUND: ${{ needs.docker.outputs.docker_found || 'false' }}
           SECURITY_EXIT: ${{ needs.scans.outputs.security_exit || '0' }}
           PR_SIZE: ${{ needs.prepare.outputs.pr_size }}
           DIFF_LINES: ${{ needs.prepare.outputs.diff_lines }}
           CHANGED_FILES: ${{ needs.prepare.outputs.changed_files }}
           REVIEW_TYPE: ${{ needs.prepare.outputs.review_type }}
+          TIMER_FILE: ${{ runner.temp }}/timer.txt
+          RUNNER_TEMP: ${{ runner.temp }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_STARTED_AT: ${{ github.run_started_at }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         with:
           script: |
             const path = require('path');
