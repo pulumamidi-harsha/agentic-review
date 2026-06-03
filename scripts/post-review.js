@@ -12,8 +12,20 @@ function details(summary, content, open = false) {
   return `${tag}<summary>${summary}</summary>\n\n${String(content).trim()}\n\n</details>\n`;
 }
 
+/** Normalize LLM fields that may be string, array, or object. */
+function toBulletLines(value) {
+  if (value == null || value === '') return [];
+  if (Array.isArray(value)) {
+    return value.flatMap(v => toBulletLines(v));
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value).map(([k, v]) => `- ${k}: ${v}`);
+  }
+  return String(value).split('\n').map(l => l.trim()).filter(Boolean);
+}
+
 function shortSummary(text, maxLen = 320) {
-  const t = (text || '').trim();
+  const t = (Array.isArray(text) ? text.join(' ') : String(text || '')).trim();
   if (t.length <= maxLen) return t;
   const cut = t.slice(0, maxLen);
   const last = cut.lastIndexOf('. ');
@@ -92,12 +104,9 @@ if (reviewData.verdict_rationale || prChangedFiles.length || prReasons.length) {
   if (prChangedFiles.length) {
     lines.push(`**Files you changed:** ${prChangedFiles.map(f => `\`${f}\``).join(', ')}`);
   }
-  if (reviewData.verdict_rationale) {
-    reviewData.verdict_rationale.split('\n').forEach(l => {
-      const t = l.trim();
-      if (t) lines.push(t.startsWith('-') ? t : `- ${t}`);
-    });
-  }
+  toBulletLines(reviewData.verdict_rationale).forEach(l => {
+    lines.push(l.startsWith('-') ? l : `- ${l}`);
+  });
   if (prReasons.length) {
     lines.push('', '**Blocking reasons (in your diff):**');
     prReasons.forEach(r => lines.push(`- \`${r.file || 'PR'}\`: ${r.reason}`));

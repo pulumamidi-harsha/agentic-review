@@ -14,7 +14,7 @@ VERDICT BOUNDARIES (critical):
 - Scanner/install failures are environmental — note in check_results_analysis; do not reject for those alone.
 
 REQUIRED OUTPUT — exact reasons (mandatory):
-- verdict_rationale: 2–4 bullet lines. For needs_work/reject, EVERY bullet MUST name a **file path from this PR's changed-files list** and the concrete problem. If nothing in changed files is wrong, verdict MUST be approve.
+- verdict_rationale: string (newline-separated bullets) OR array of strings — NOT an object. For needs_work/reject, EVERY bullet MUST name a **file path from this PR's changed-files list** and the concrete problem. If nothing in changed files is wrong, verdict MUST be approve.
 - verdict_reasons: array of {scope: "pr_change"|"pre_existing"|"check_failure_outside_diff", file: "path or empty", reason: "one clear sentence"}
   - Use scope pr_change only for issues in changed files.
   - Use check_failure_outside_diff for failed lint/test in paths not in the PR (e.g. e2e/ types when PR only touches workflows).

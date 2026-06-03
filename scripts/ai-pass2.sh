@@ -135,22 +135,30 @@ if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-review.txt" "$SYSTEM_PROM
       CHANGED_JSON=$(jq -R -s -c 'split("\n") | map(select(length > 0))' "${AGENTIC_TMP}/pr-changed-files.txt" 2>/dev/null) || CHANGED_JSON='[]'
     fi
     jq --argjson changed "$CHANGED_JSON" '
+      def as_text($v):
+        if $v == null then ""
+        elif ($v | type) == "string" then $v
+        elif ($v | type) == "array" then ($v | map(if type == "string" then . else tostring end) | join("\n"))
+        else ($v | tostring)
+        end;
       def in_changed($f):
         if ($f == null or $f == "" or ($changed | length) == 0) then false
         else any($changed[] as $c; ($f == $c) or ($f | startswith($c + "/")) or ($c | startswith($f + "/")))
         end;
       . as $r
+      | .verdict_rationale = as_text(.verdict_rationale)
+      | .summary = as_text(.summary)
       | ($r.issues // [] | map(select(.is_pr_change == true or in_changed(.file)))) as $pr_issues
-      | if ($r.verdict == "needs_work" or $r.verdict == "reject") and ($pr_issues | length) == 0 then
-          $r
+      | if (.verdict == "needs_work" or .verdict == "reject") and ($pr_issues | length) == 0 then
+          .
           | .verdict = "approve"
-          | .verdict_rationale = ((.verdict_rationale // "") + "\n- Repo-wide CI failures (e.g. e2e/, src/) are outside this PRs changed files — not counted against this PR.")
+          | .verdict_rationale = (.verdict_rationale + "\n- Repo-wide CI failures (e.g. e2e/, src/) are outside this PRs changed files — not counted against this PR.")
           | .verdict_reasons = ((.verdict_reasons // []) + [{
               scope: "check_failure_outside_diff",
               file: "",
               reason: "Lint/typecheck/test failures ran on the whole repo but this PR did not modify those paths."
             }])
-        else $r
+        else .
         end
     ' "${AGENTIC_TMP}/ai-review.txt" > "${AGENTIC_TMP}/ai-review-adjusted.json" 2>/dev/null \
       && mv "${AGENTIC_TMP}/ai-review-adjusted.json" "${AGENTIC_TMP}/ai-review.txt"
