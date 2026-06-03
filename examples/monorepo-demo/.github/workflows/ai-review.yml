@@ -13,9 +13,11 @@ permissions:
 
 jobs:
   ai-review:
-    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@d13cc156139ef9cd577109cd3914253f06197c37
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@fa82daf
     with:
       review_type: quick
+      pipeline_repository: pulumamidi-harsha/agentic-review
+      pipeline_ref: fa82daf
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
