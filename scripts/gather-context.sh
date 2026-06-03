@@ -70,8 +70,11 @@ echo "$CONFIG_CONTENT" > "${AGENTIC_TMP}/config-files.txt"
 agentic_log "  Config files loaded: ${CONFIG_COUNT}"
 
 PR_SIZE="normal"
-[[ "${DIFF_LINES}" -gt 2000 ]] && PR_SIZE="large"
-[[ "${DIFF_LINES}" -gt 5000 ]] && PR_SIZE="very_large"
+if [[ "${DIFF_LINES}" -gt 5000 ]]; then
+  PR_SIZE="very_large"
+elif [[ "${DIFF_LINES}" -gt 2000 ]]; then
+  PR_SIZE="large"
+fi
 
 write_github_output "diff_lines" "$DIFF_LINES"
 write_github_output "changed_files" "$CHANGED_FILES"
@@ -84,4 +87,6 @@ if find . -maxdepth 3 \( -name "Dockerfile" -o -name "Dockerfile.*" -o -name "*.
 fi
 write_github_output "has_dockerfile" "$HAS_DOCKERFILE"
 
-[[ "$PR_SIZE" == "very_large" ]] && agentic_log "  ⚠ PR is very large (${DIFF_LINES} lines)."
+if [[ "$PR_SIZE" == "very_large" ]]; then
+  agentic_log "  ⚠ PR is very large (${DIFF_LINES} lines)."
+fi
