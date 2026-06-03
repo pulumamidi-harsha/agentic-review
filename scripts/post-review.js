@@ -16,6 +16,8 @@ const auditResults = read(`${AGENTIC_TMP}/audit-results.txt`).trim();
 const sonarResults = read(`${AGENTIC_TMP}/sonar-results.txt`).trim();
 const customPayload = read(`${AGENTIC_TMP}/validated-payload.txt`).trim();
 const checkCoverageMd = read(`${AGENTIC_TMP}/check-coverage.md`).trim();
+const pass1SummaryMd = read(`${AGENTIC_TMP}/pass1-summary.md`).trim();
+const instructionSource = read(`${AGENTIC_TMP}/instruction-source.txt`, 'none').trim();
 let checkCoverage = {};
 try { checkCoverage = JSON.parse(read(`${AGENTIC_TMP}/check-coverage.json`, '{}')); } catch {}
 
@@ -117,6 +119,21 @@ const body = [
   '',
   customInstructionsSection,
   '',
+  '### Pass 1 — how commands were chosen',
+  '',
+  `| Item | Value |`,
+  `|------|-------|`,
+  `| Custom instruction source | \`${instructionSource}\` (none = auto-detect from repo config only) |`,
+  `| Setup commands | ${(commands.setup_commands || []).length} |`,
+  `| Check commands | ${(commands.check_commands || []).length} |`,
+  `| Dependency audit | ${commands.dependency_audit?.cmd ? 'yes' : 'skipped'} |`,
+  '',
+  (commands.payload_analysis?.overrides?.length > 0)
+    ? `**Owner vs auto-detect:**\n${commands.payload_analysis.overrides.map(o => `- ${o}`).join('\n')}\n`
+    : (instructionSource !== 'none'
+      ? `**Owner vs auto-detect:** ${commands.payload_analysis?.accepted_count ?? 'all'} instruction(s) accepted; see payload_analysis in Pass 1 artifact.\n`
+      : '**Owner vs auto-detect:** No custom instructions — all commands derived from repository config files.\n'),
+  '',
   checkCoverageMd ? (checkCoverage.gap_count > 0
     ? `### \u26a0\ufe0f Minimum CI checks \u2014 gaps in repository setup\n\n${checkCoverageMd}\n`
     : `### \u2705 Minimum CI check coverage\n\n${checkCoverageMd}\n`) : '',
@@ -129,11 +146,24 @@ const body = [
   positives ? `### \u2705 What\u2019s Good\n\n${positives}\n` : '',
   suggestions ? `### \ud83d\udca1 Suggestions\n\n${suggestions}\n` : '',
   '',
-  '<details><summary>\ud83d\udccb Commands AI decided to run</summary>',
+  '<details><summary>\ud83d\udccb Commands AI decided to run (setup + checks + audit)</summary>',
+  '',
+  '**Setup:**',
+  '',
+  (commands.setup_commands || []).length
+    ? (commands.setup_commands || []).map((c, i) => `${i + 1}. \`${c.cmd}\`\n   - ${c.purpose}`).join('\n\n')
+    : '_None_',
+  '',
+  '**Checks:**',
   '',
   cmdList || '_None generated_',
   '',
+  commands.dependency_audit?.cmd
+    ? `**Dependency audit:**\n\`${commands.dependency_audit.cmd}\`\n- ${commands.dependency_audit.purpose || ''}\n`
+    : '**Dependency audit:** _Not configured by Pass 1_\n',
+  '',
   '</details>',
+  pass1SummaryMd ? '<details><summary>\ud83d\udd0d Full Pass 1 detection summary</summary>\n\n' + pass1SummaryMd + '\n\n</details>\n' : '',
   '',
   '<details><summary>\ud83d\udcca Full Check Output</summary>',
   '',

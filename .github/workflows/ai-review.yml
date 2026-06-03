@@ -202,12 +202,13 @@ jobs:
           name: agentic-prepare
           path: ${{ env.AGENTIC_TMP }}
 
+      # No setup-node dependency cache — cache requires npm/yarn lockfiles and breaks pnpm-only repos.
+      # Pass 1 setup_commands install deps (pnpm install, npm ci, etc.) in run-checks.sh.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         if: needs.prepare.outputs.node_version != ''
         with:
           node-version: ${{ needs.prepare.outputs.node_version }}
-          cache: npm
 
       - name: Install package manager
         if: needs.prepare.outputs.node_version != ''

@@ -21,11 +21,15 @@ fi
 if [[ -z "$PAYLOAD" ]]; then
   agentic_log "  No custom payload provided — AI will auto-detect everything"
   write_github_output "has_payload" "false"
+  write_github_output "instruction_source" "none"
+  echo "none" > "${AGENTIC_TMP}/instruction-source.txt"
   echo "" > "${AGENTIC_TMP}/validated-payload.txt"
   exit 0
 fi
 
 agentic_log "  Source: ${SOURCE}"
+echo "$SOURCE" > "${AGENTIC_TMP}/instruction-source.txt"
+write_github_output "instruction_source" "$SOURCE"
 VALIDATED=""
 REJECTED=""
 WARNINGS=""
