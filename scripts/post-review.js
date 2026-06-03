@@ -6,6 +6,20 @@ function read(path, fallback = '') {
   try { return fs.readFileSync(path, 'utf8'); } catch { return fallback; }
 }
 
+function details(summary, content, open = false) {
+  if (!content || !String(content).trim()) return '';
+  const tag = open ? '<details open>' : '<details>';
+  return `${tag}<summary>${summary}</summary>\n\n${String(content).trim()}\n\n</details>\n`;
+}
+
+function shortSummary(text, maxLen = 320) {
+  const t = (text || '').trim();
+  if (t.length <= maxLen) return t;
+  const cut = t.slice(0, maxLen);
+  const last = cut.lastIndexOf('. ');
+  return (last > 120 ? cut.slice(0, last + 1) : cut) + '… _(expand sections below)_';
+}
+
 let review = read(`${AGENTIC_TMP}/ai-review.txt`, '{}');
 let checks = read(`${AGENTIC_TMP}/check-results.txt`, 'No results');
 let commands = {};
@@ -18,8 +32,6 @@ const customPayload = read(`${AGENTIC_TMP}/validated-payload.txt`).trim();
 const checkCoverageMd = read(`${AGENTIC_TMP}/check-coverage.md`).trim();
 const pass1SummaryMd = read(`${AGENTIC_TMP}/pass1-summary.md`).trim();
 const instructionSource = read(`${AGENTIC_TMP}/instruction-source.txt`, 'none').trim();
-let checkCoverage = {};
-try { checkCoverage = JSON.parse(read(`${AGENTIC_TMP}/check-coverage.json`, '{}')); } catch {}
 
 const passed = process.env.CHECKS_PASSED ?? '0';
 const failed = process.env.CHECKS_FAILED ?? '0';
@@ -48,136 +60,158 @@ const stackInfo = commands.stack
   ? `${commands.stack.language || '?'} / ${commands.stack.framework || '?'} / ${commands.stack.package_manager || '?'}`
   : 'Unknown';
 
-const allStacks = commands.stacks || [];
-const multiStackInfo = allStacks.length > 1
-  ? '\n\n**Detected Stacks:**\n' + allStacks.map(s => `- ${s.language}${s.framework ? ' / ' + s.framework : ''} (\`${s.directory || 'root'}\`)`).join('\n') + '\n'
-  : '';
-
 const payloadAnalysis = commands.payload_analysis || null;
-let customInstructionsSection = '';
-if (customPayload) {
-  const payloadLines = customPayload.split('\n').filter(l => l.trim()).map(l => `> ${l.trim()}`).join('\n');
-  const overrides = payloadAnalysis?.overrides?.length > 0
-    ? payloadAnalysis.overrides.map(o => `- ${o}`).join('\n')
-    : '- AI detection aligned with owner instructions (no conflicts)';
-  customInstructionsSection = [
-    '### 📋 Repository Owner Instructions',
-    '',
-    payloadLines,
-    '',
-    '**AI Priority Analysis:**',
-    `- Instructions accepted: ${payloadAnalysis?.accepted_count || 'all'}`,
-    `- Priority: Owner instructions > AI auto-detection`,
-    overrides ? `\n**Decisions:**\n${overrides}` : '',
-    ''
-  ].join('\n');
-}
 
 const cmdList = (commands.check_commands || [])
-  .map((c, i) => `${i + 1}. \`${c.cmd}\`\n   - **Purpose:** ${c.purpose}\n   - **Confidence:** ${c.confidence}\n`)
+  .map((c, i) => `${i + 1}. \`${c.cmd}\`\n   - ${c.purpose} [${c.confidence}]`)
   .join('\n');
 
 const verdictMap = { approve: ['\u2705', 'APPROVED'], needs_work: ['\u26a0\ufe0f', 'NEEDS WORK'], reject: ['\ud83d\udd34', 'CHANGES REQUIRED'] };
 const [verdictEmoji, verdictLabel] = verdictMap[reviewData.verdict] || ['\u2139\ufe0f', 'REVIEW'];
 const statusEmoji = checksExit === '0' ? '\u2705' : (setupFailed ? '\u26a0\ufe0f' : '\u274c');
 
-const issuesList = (reviewData.issues || []).map(i => {
+const formatIssue = (i) => {
   const sev = { critical: '\ud83d\udea8', high: '\ud83d\udd34', medium: '\ud83d\udfe1', low: '\ud83d\udd35', info: '\u2139\ufe0f' }[i.severity] || '-';
   const loc = i.file ? `\`${i.file}${i.line ? ':' + i.line : ''}\`` : '';
   return `${sev} **${i.title}** ${loc}\n   ${i.description}${i.suggestion ? '\n   \ud83d\udca1 ' + i.suggestion : ''}`;
-}).join('\n\n');
+};
+
+const prIssues = (reviewData.issues || []).filter(i => i.is_pr_change !== false);
+const otherIssues = (reviewData.issues || []).filter(i => i.is_pr_change === false);
+const issuesInPr = prIssues.map(formatIssue).join('\n\n');
+const issuesOther = otherIssues.map(formatIssue).join('\n\n');
+
+const verdictReasons = reviewData.verdict_reasons || [];
+const prReasons = verdictReasons.filter(r => r.scope === 'pr_change');
+const outsideReasons = verdictReasons.filter(r => r.scope === 'check_failure_outside_diff' || r.scope === 'pre_existing');
+const prChangedFiles = read(`${AGENTIC_TMP}/pr-changed-files.txt`).trim().split('\n').filter(Boolean);
+
+let verdictWhySection = '';
+if (reviewData.verdict_rationale || prChangedFiles.length || prReasons.length) {
+  const lines = [];
+  if (prChangedFiles.length) {
+    lines.push(`**Files you changed:** ${prChangedFiles.map(f => `\`${f}\``).join(', ')}`);
+  }
+  if (reviewData.verdict_rationale) {
+    reviewData.verdict_rationale.split('\n').forEach(l => {
+      const t = l.trim();
+      if (t) lines.push(t.startsWith('-') ? t : `- ${t}`);
+    });
+  }
+  if (prReasons.length) {
+    lines.push('', '**Blocking reasons (in your diff):**');
+    prReasons.forEach(r => lines.push(`- \`${r.file || 'PR'}\`: ${r.reason}`));
+  }
+  if (outsideReasons.length) {
+    lines.push('', '**Not counted against this PR:**');
+    outsideReasons.forEach(r => lines.push(`- ${r.reason}`));
+  }
+  verdictWhySection = `### Why **${verdictLabel}**\n\n${lines.join('\n')}\n`;
+}
+
+const ownerInstructionsBlock = customPayload ? [
+  customPayload.split('\n').filter(l => l.trim()).map(l => `> ${l.trim()}`).join('\n'),
+  '',
+  '**Priority:** Owner instructions override auto-detection when they conflict.',
+  `- Source: \`${instructionSource}\``,
+  `- Accepted: ${payloadAnalysis?.accepted_count ?? 'all'}`,
+  payloadAnalysis?.overrides?.length
+    ? '\n**Decisions:**\n' + payloadAnalysis.overrides.map(o => `- ${o}`).join('\n')
+    : '',
+].join('\n') : '';
+
+const pass1Block = [
+  '| Item | Value |',
+  '|------|-------|',
+  `| Instruction source | \`${instructionSource}\` |`,
+  `| Setup / check commands | ${(commands.setup_commands || []).length} / ${(commands.check_commands || []).length} |`,
+  `| Dependency audit | ${commands.dependency_audit?.cmd ? 'yes' : 'skipped'} |`,
+  '',
+  '**Setup:**',
+  (commands.setup_commands || []).length
+    ? commands.setup_commands.map((c, i) => `${i + 1}. \`${c.cmd}\` — ${c.purpose}`).join('\n')
+    : '_None_',
+  '',
+  '**Checks:**',
+  cmdList || '_None_',
+].join('\n');
+
+const repoHealth = reviewData.repo_health || {};
+const healthEmoji = { healthy: '\u2705', needs_attention: '\u26a0\ufe0f', critical: '\ud83d\udea8' }[repoHealth.status] || '\u2139\ufe0f';
+const repoHealthBlock = repoHealth.summary ? [
+  `**Status:** ${healthEmoji} ${(repoHealth.status || 'unknown').replace(/_/g, ' ')}`,
+  '',
+  repoHealth.summary,
+  '',
+  (repoHealth.issues || []).length
+    ? '**Pre-existing:**\n' + repoHealth.issues.map(i =>
+      typeof i === 'string' ? `- ${i}` : `- ${i.title || i.description || ''}`
+    ).filter(Boolean).join('\n')
+    : '',
+  (repoHealth.recommendations || []).length
+    ? '\n**Recommendations:**\n' + repoHealth.recommendations.map(r => `- ${r}`).join('\n')
+    : '',
+].filter(Boolean).join('\n') : '';
 
 const positives = (reviewData.positives || []).map(p => `- ${p}`).join('\n');
 const suggestions = (reviewData.suggestions || []).map(s => `- ${s}`).join('\n');
 
-const repoHealth = reviewData.repo_health || {};
-const healthEmoji = { healthy: '\u2705', needs_attention: '\u26a0\ufe0f', critical: '\ud83d\udea8' }[repoHealth.status] || '\u2139\ufe0f';
-const repoHealthSection = repoHealth.summary ? [
-  `### \ud83c\udfe5 Repository Health \u2014 ${healthEmoji} ${(repoHealth.status || 'unknown').replace('_', ' ').toUpperCase()}`,
+const commandsDetail = [
+  '**Setup:**',
+  (commands.setup_commands || []).length
+    ? commands.setup_commands.map((c, i) => `${i + 1}. \`${c.cmd}\`\n   - ${c.purpose}`).join('\n\n')
+    : '_None_',
   '',
-  `> ${repoHealth.summary}`,
+  '**Checks:**',
+  cmdList || '_None_',
   '',
-  (repoHealth.issues || []).length > 0 ? '**Pre-existing issues (not introduced by this PR):**\n' + repoHealth.issues.map(i => `- ${i}`).join('\n') + '\n' : '',
-  (repoHealth.recommendations || []).length > 0 ? '**Recommendations:**\n' + repoHealth.recommendations.map(r => `- ${r}`).join('\n') + '\n' : '',
-].filter(Boolean).join('\n') : '';
+  commands.dependency_audit?.cmd
+    ? `**Audit:** \`${commands.dependency_audit.cmd}\``
+    : '**Audit:** _skipped_',
+].join('\n');
 
 const sizeWarning = prSize === 'very_large'
-  ? `\n> \u26a0\ufe0f **Large PR** (${diffLines} lines across ${changedFiles} files).\n`
+  ? `> \u26a0\ufe0f Large PR (${diffLines} lines, ${changedFiles} files).\n`
   : prSize === 'large'
-  ? `\n> \ud83d\udcdd PR has ${diffLines} lines across ${changedFiles} files.\n`
+  ? `> \ud83d\udcdd ${diffLines} lines, ${changedFiles} files.\n`
   : '';
+
+const issueCountPr = prIssues.length;
+const issueCountOther = otherIssues.length;
 
 const body = [
   `## \ud83e\udd16 AI Code Review \u2014 ${verdictEmoji} ${verdictLabel}`,
   '',
-  `> ${reviewData.summary || 'Review complete.'}`,
+  `> ${shortSummary(reviewData.summary)}`,
+  verdictWhySection,
   sizeWarning,
-  `| Stack | Checks | Security | Mode | Duration |`,
-  `|-------|--------|----------|------|----------|`,
-  `| ${stackInfo} | ${statusEmoji} ${passed} passed, ${failed} failed | ${securityExit === '0' ? '\u2705' : '\u26a0\ufe0f'} | ${reviewType} | ${durationStr} |`,
-  multiStackInfo,
+  `| Stack | Checks | Security | Mode | Time |`,
+  `|-------|--------|----------|------|------|`,
+  `| ${stackInfo} | ${statusEmoji} ${passed} ok, ${failed} fail | ${securityExit === '0' ? '\u2705' : '\u26a0\ufe0f'} | ${reviewType} | ${durationStr} |`,
   '',
-  customInstructionsSection,
+  issueCountPr > 0
+    ? `### Issues in your changed files (${issueCountPr})\n\n${issuesInPr}\n`
+    : `### Issues in your changed files\n\nNone identified in this PR\u2019s diff.\n`,
   '',
-  '### Pass 1 — how commands were chosen',
-  '',
-  `| Item | Value |`,
-  `|------|-------|`,
-  `| Custom instruction source | \`${instructionSource}\` (none = auto-detect from repo config only) |`,
-  `| Setup commands | ${(commands.setup_commands || []).length} |`,
-  `| Check commands | ${(commands.check_commands || []).length} |`,
-  `| Dependency audit | ${commands.dependency_audit?.cmd ? 'yes' : 'skipped'} |`,
-  '',
-  (commands.payload_analysis?.overrides?.length > 0)
-    ? `**Owner vs auto-detect:**\n${commands.payload_analysis.overrides.map(o => `- ${o}`).join('\n')}\n`
-    : (instructionSource !== 'none'
-      ? `**Owner vs auto-detect:** ${commands.payload_analysis?.accepted_count ?? 'all'} instruction(s) accepted; see payload_analysis in Pass 1 artifact.\n`
-      : '**Owner vs auto-detect:** No custom instructions — all commands derived from repository config files.\n'),
-  '',
-  checkCoverageMd ? (checkCoverage.gap_count > 0
-    ? `### \u26a0\ufe0f Minimum CI checks \u2014 gaps in repository setup\n\n${checkCoverageMd}\n`
-    : `### \u2705 Minimum CI check coverage\n\n${checkCoverageMd}\n`) : '',
-  '',
-  repoHealthSection,
-  '',
-  reviewData.check_results_analysis ? `### CI Analysis\n${reviewData.check_results_analysis}\n` : '',
-  reviewData.security_analysis ? `### Security Analysis\n${reviewData.security_analysis}\n` : '',
-  issuesList ? `### Issues Found\n\n${issuesList}\n` : '',
-  positives ? `### \u2705 What\u2019s Good\n\n${positives}\n` : '',
-  suggestions ? `### \ud83d\udca1 Suggestions\n\n${suggestions}\n` : '',
-  '',
-  '<details><summary>\ud83d\udccb Commands AI decided to run (setup + checks + audit)</summary>',
-  '',
-  '**Setup:**',
-  '',
-  (commands.setup_commands || []).length
-    ? (commands.setup_commands || []).map((c, i) => `${i + 1}. \`${c.cmd}\`\n   - ${c.purpose}`).join('\n\n')
-    : '_None_',
-  '',
-  '**Checks:**',
-  '',
-  cmdList || '_None generated_',
-  '',
-  commands.dependency_audit?.cmd
-    ? `**Dependency audit:**\n\`${commands.dependency_audit.cmd}\`\n- ${commands.dependency_audit.purpose || ''}\n`
-    : '**Dependency audit:** _Not configured by Pass 1_\n',
-  '',
-  '</details>',
-  pass1SummaryMd ? '<details><summary>\ud83d\udd0d Full Pass 1 detection summary</summary>\n\n' + pass1SummaryMd + '\n\n</details>\n' : '',
-  '',
-  '<details><summary>\ud83d\udcca Full Check Output</summary>',
-  '',
-  checks,
-  '',
-  '</details>',
-  '',
-  dockerFound ? '<details><summary>\ud83d\udc33 Docker Build & Trivy Scan</summary>\n\n' + dockerResults + '\n\n</details>\n' : '',
-  securityResults ? '<details><summary>\ud83d\udd12 Security & File Hygiene Scans</summary>\n\n' + securityResults + '\n\n</details>\n' : '',
-  auditResults ? '<details><summary>\ud83d\udce6 Dependency Vulnerability Audit</summary>\n\n' + auditResults + '\n\n</details>\n' : '',
-  sonarResults ? '<details><summary>\ud83d\udcca SonarQube Analysis</summary>\n\n' + sonarResults + '\n\n</details>\n' : '',
+  customPayload ? details('\ud83d\udccb Owner instructions', ownerInstructionsBlock) : '',
+  details('\u2699\ufe0f Pass 1 — commands chosen', pass1Block),
+  details('\ud83d\udcca Minimum CI check coverage', checkCoverageMd),
+  details('\ud83c\udfe5 Repository health (pre-existing)', repoHealthBlock),
+  details(`\ud83d\udd0d Other findings outside your diff (${issueCountOther})`, issuesOther),
+  details('\ud83e\uddea CI analysis', reviewData.check_results_analysis),
+  details('\ud83d\udd12 Security analysis', reviewData.security_analysis),
+  details('\u2705 What\u2019s good', positives),
+  details('\ud83d\udca1 Suggestions', suggestions),
+  details('\ud83d\udccb Full command list', commandsDetail),
+  pass1SummaryMd ? details('\ud83d\udd0d Pass 1 JSON summary', pass1SummaryMd) : '',
+  details('\ud83d\udcca Full check output', checks),
+  dockerFound ? details('\ud83d\udc33 Docker & Trivy', dockerResults) : '',
+  securityResults ? details('\ud83d\udee1\ufe0f Security & hygiene scans', securityResults) : '',
+  auditResults ? details('\ud83d\udce6 Dependency audit', auditResults) : '',
+  sonarResults ? details('\ud83d\udcca SonarQube', sonarResults) : '',
   '',
   '---',
-  `<sub>\ud83e\udd16 Powered by <a href="https://github.com/pulumamidi-harsha/agentic-review">agentic-review</a> | ${changedFiles} files, ${diffLines} lines | ${durationStr}</sub>`,
+  `<sub>\ud83e\udd16 <a href="https://github.com/pulumamidi-harsha/agentic-review">agentic-review</a> \u00b7 ${changedFiles} files \u00b7 ${diffLines} diff lines \u00b7 ${durationStr}</sub>`,
 ].filter(Boolean).join('\n');
 
 module.exports = { body, reviewData, durationStr };

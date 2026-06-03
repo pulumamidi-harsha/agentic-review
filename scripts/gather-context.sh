@@ -37,6 +37,8 @@ CHANGED_FILES=$(grep -c "^diff --git" "${AGENTIC_TMP}/pr-diff.txt" 2>/dev/null |
 CHANGED_FILES=${CHANGED_FILES:-0}
 agentic_log "  PR diff: ${DIFF_LINES} lines across ${CHANGED_FILES} files"
 
+pr_changed_files > "${AGENTIC_TMP}/pr-changed-files.txt" 2>/dev/null || true
+
 CONFIG_CONTENT=""
 CONFIG_COUNT=0
 find . -maxdepth 3 \( \

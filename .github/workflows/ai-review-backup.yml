@@ -492,6 +492,9 @@ jobs:
           DIFF_LINES: ${{ needs.prepare.outputs.diff_lines }}
           CHANGED_FILES: ${{ needs.prepare.outputs.changed_files }}
           REVIEW_TYPE: ${{ needs.prepare.outputs.review_type }}
+          CHECKS_PASSED: ${{ needs.checks.outputs.passed || '0' }}
+          CHECKS_FAILED: ${{ needs.checks.outputs.failed || '0' }}
+          CHECKS_EXIT: ${{ needs.checks.outputs.exit_code || '0' }}
         run: |
           TIMER_FILE="${{ runner.temp }}/timer.txt"
           [[ -f "$TIMER_FILE" ]] && export TIMER_START=$(cat "$TIMER_FILE")
