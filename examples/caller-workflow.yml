@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   ai-review:
-    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@main
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
     with:
       # Optional: Tell the AI about your repo in plain English.
       # Just describe what you need — the AI figures out the rest.

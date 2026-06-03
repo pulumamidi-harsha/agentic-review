@@ -140,7 +140,7 @@ const body = [
   sonarResults ? '<details><summary>\ud83d\udcca SonarQube Analysis</summary>\n\n' + sonarResults + '\n\n</details>\n' : '',
   '',
   '---',
-  `<sub>\ud83e\udd16 Powered by <a href="https://github.com/bayer-int/agentic-review">agentic-review</a> | ${changedFiles} files, ${diffLines} lines | ${durationStr}</sub>`,
+  `<sub>\ud83e\udd16 Powered by <a href="https://github.com/pulumamidi-harsha/agentic-review">agentic-review</a> | ${changedFiles} files, ${diffLines} lines | ${durationStr}</sub>`,
 ].filter(Boolean).join('\n');
 
 module.exports = { body, reviewData, durationStr };

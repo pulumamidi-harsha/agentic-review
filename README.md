@@ -38,7 +38,7 @@ A **centralized, reusable** GitHub Actions workflow that automatically reviews p
 ```yaml
 jobs:
   ai-review:
-    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@main
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
     with:
       review_type: quick
 ```
@@ -246,7 +246,7 @@ permissions:
 
 jobs:
   ai-review:
-    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@main
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
@@ -264,7 +264,7 @@ If you want to give the AI extra context about your repo:
 ```yaml
 jobs:
   ai-review:
-    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@main
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
     with:
       custom_instructions: |
         Our Docker build needs artifactory username and auth token as build arguments.
