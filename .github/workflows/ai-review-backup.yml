@@ -53,6 +53,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || github.ref }}
@@ -580,6 +581,61 @@ jobs:
                   ? `🔴 AI Review: CHANGES REQUIRED\n\n${reviewData.summary || ''}`
                   : `⚠️ AI Review: NEEDS WORK\n\n${reviewData.summary || ''}`
               }).catch(e => console.log('request changes:', e.message));
+            }
+
+            // PR list labels (like dependabot labels) — visible before opening the PR
+            const AI_LABELS = ['ai-approved', 'ai-rejected', 'ai-needs-work'];
+            const labelDefs = {
+              'ai-approved': { color: '1a7f37', description: 'AI PR review: approved (no blocking issues in diff)' },
+              'ai-rejected': { color: 'b60205', description: 'AI PR review: changes required (blocking issues)' },
+              'ai-needs-work': { color: 'fbca04', description: 'AI PR review: needs work (non-blocking improvements)' }
+            };
+            for (const [name, meta] of Object.entries(labelDefs)) {
+              try {
+                await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name });
+              } catch (e) {
+                if (e.status === 404) {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name,
+                    color: meta.color,
+                    description: meta.description
+                  });
+                }
+              }
+            }
+            let targetLabel = null;
+            if (verdict === 'approve') targetLabel = 'ai-approved';
+            else if (verdict === 'reject') targetLabel = 'ai-rejected';
+            else if (verdict === 'needs_work') targetLabel = 'ai-needs-work';
+
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const current = (issue.labels || []).map(l => l.name);
+            for (const name of AI_LABELS) {
+              if (current.includes(name) && name !== targetLabel) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name
+                }).catch(e => console.log('remove label:', e.message));
+              }
+            }
+            if (targetLabel) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: [targetLabel]
+              }).catch(e => console.log('add label:', e.message));
+              core.info(`PR label set: ${targetLabel} (verdict=${verdict})`);
+            } else {
+              core.info(`PR labels cleared (verdict=${verdict || 'comment'})`);
             }
 
       - name: Upload debug artifacts on failure
