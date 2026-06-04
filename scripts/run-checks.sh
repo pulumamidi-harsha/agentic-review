@@ -41,6 +41,26 @@ is_out_of_scope_cmd() {
 echo "--- SETUP: Installing dependencies ---"
 SETUP_CMDS=$(jq -r '.setup_commands[]?.cmd // empty' ${AGENTIC_TMP}/ai-commands.json)
 REPO_ROOT="$PWD"
+
+# Generic Python venv bootstrap: many repos' Makefiles/scripts reference a venv path
+# (e.g. `source .venv/bin/activate`) but don't create it first. Pre-create any venv
+# referenced in setup OR check commands so activation works regardless of the script style.
+PY_BIN=$(command -v python3 || command -v python || true)
+if [[ -n "$PY_BIN" ]]; then
+  ALL_CMDS=$(jq -r '(.setup_commands[]?.cmd // empty), (.check_commands[]?.cmd // empty)' "${AGENTIC_TMP}/ai-commands.json" 2>/dev/null)
+  VENV_DIRS=$(printf '%s\n' "$ALL_CMDS" \
+    | grep -oE '[[:alnum:]_.-]*venv[[:alnum:]_.-]*/bin/activate' \
+    | awk -F'/bin/activate' '{print $1}' \
+    | sort -u)
+  while IFS= read -r vdir; do
+    [[ -z "$vdir" ]] && continue
+    if [[ ! -d "$vdir" ]]; then
+      echo "  AUTO-VENV: creating '$vdir' (referenced by setup/check commands but missing)"
+      "$PY_BIN" -m venv "$vdir" || echo "  WARN: venv creation failed for '$vdir'"
+    fi
+  done <<< "$VENV_DIRS"
+fi
+
 while IFS= read -r cmd; do
   [[ -z "$cmd" ]] && continue
   if is_out_of_scope_cmd "$cmd" "setup"; then
