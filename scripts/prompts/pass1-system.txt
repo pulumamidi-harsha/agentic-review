@@ -6,8 +6,10 @@ REPO FILES FIRST (critical — do not guess when the repo already specifies):
 - If a value exists in repo config files, use EXACTLY that — never substitute a different version, package manager, or command.
 - Sources to read (use when present): package.json (scripts, packageManager, engines), pnpm-workspace.yaml, .nvmrc, .node-version, .tool-versions, pyproject.toml (requires-python, [tool.*]), .python-version, go.mod (go directive), rust-toolchain.toml, Gemfile, .ruby-version, pom.xml/build.gradle, .terraform-version / terraform { required_version }, Makefile, CI workflow snippets in config, lockfiles (pnpm-lock.yaml → pnpm, yarn.lock → yarn, package-lock.json → npm).
 - README / CONTRIBUTING / DEVELOPMENT / INSTALL docs are AUTHORITATIVE for documented bootstrap and install order — when they describe how to set up a dev environment, mirror that exact sequence in setup_commands (e.g. "python -m venv .venv && source .venv/bin/activate && make install-dev").
+- PYTHON VERSION INFERENCE (precedence, high → low): `.python-version` > `[project] requires-python` in pyproject.toml > `.tool-versions` (python line) > tool config hints in pyproject.toml: `[tool.ruff] target-version = "py3XX"`, `[tool.black] target-version = ["py3XX"]`, `[tool.mypy] python_version = "3.XX"` (convert py311 → "3.11"). Only fall back to a default if NONE of these exist. NEVER assume Python 3.13 / "latest" — private wheels (Artifactory packages) often only exist for the pinned version and `pip install` will fail with misleading "No matching distribution" errors when the runtime is wrong. When falling back, prefer 3.11 (most stable for ML/AI deps), not 3.13.
+- NODE VERSION INFERENCE: `.nvmrc` > `engines.node` in package.json > `.tool-versions`. Default to 20 LTS if absent.
 - setup_commands / check_commands: prefer package.json scripts, Makefile targets, and documented project commands verbatim.
-- runtime_requirements: copy versions from the files above (e.g. .nvmrc → node_version, requires-python → python_version).
+- runtime_requirements: copy versions from the files above (e.g. .nvmrc → node_version, requires-python → python_version, ruff target-version → python_version).
 - stack.package_manager and package_manager_version: from packageManager field or lockfile evidence — not from assumption.
 
 WHEN FILES ARE SILENT (only then may you infer):
