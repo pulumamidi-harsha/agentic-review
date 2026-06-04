@@ -416,12 +416,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PR repository
+        uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.pipeline_repository }}
-          ref: ${{ inputs.pipeline_ref }}
-          path: ${{ env.PIPELINE_DIR }}
-          token: ${{ secrets.ORG_PAT || github.token }}
+          fetch-depth: 0
+
+      - name: Clone pipeline scripts
+        env:
+          PIPELINE_TOKEN: ${{ secrets.ORG_PAT || github.token }}
+          PIPELINE_REPO: ${{ inputs.pipeline_repository }}
+          PIPELINE_REF: ${{ inputs.pipeline_ref }}
+        run: |
+          rm -rf "$PIPELINE_DIR"
+          git clone "https://x-access-token:${PIPELINE_TOKEN}@github.com/${PIPELINE_REPO}.git" "$PIPELINE_DIR"
+          git -C "$PIPELINE_DIR" checkout "$PIPELINE_REF"
 
       - name: Fetch SonarQube
         continue-on-error: true
