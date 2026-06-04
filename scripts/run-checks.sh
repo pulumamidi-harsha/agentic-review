@@ -67,6 +67,23 @@ echo ""
 CHECK_COUNT=$(jq '.check_commands | length' ${AGENTIC_TMP}/ai-commands.json)
 echo "--- CHECKS: Running ${CHECK_COUNT} commands ---"
 
+if [[ "$SETUP_FAILED" == "true" ]]; then
+  echo "  SKIP ALL CHECKS: dependency setup failed — remaining failures would be environmental, not code"
+  RESULTS+="### Sandbox checks -- SKIPPED (dependency setup failed)"$'\n\n'
+  {
+    echo "**Summary:** 0 passed, 0 failed (checks skipped after setup failure)"
+    echo ""
+    echo "> WARNING: Dependency installation failed. Sandbox checks were not run."
+    echo ""
+    echo "$RESULTS"
+  } > ${AGENTIC_TMP}/check-results.txt
+  echo "exit_code=0" >> "$GITHUB_OUTPUT"
+  echo "passed=0" >> "$GITHUB_OUTPUT"
+  echo "failed=0" >> "$GITHUB_OUTPUT"
+  echo "setup_failed=true" >> "$GITHUB_OUTPUT"
+  exit 0
+fi
+
 for i in $(seq 0 $((CHECK_COUNT - 1))); do
   CMD=$(jq -r ".check_commands[$i].cmd" ${AGENTIC_TMP}/ai-commands.json)
   PURPOSE=$(jq -r ".check_commands[$i].purpose" ${AGENTIC_TMP}/ai-commands.json)

@@ -28,10 +28,15 @@ CUSTOM_PAYLOAD=$(cat "${AGENTIC_TMP}/validated-payload.txt" 2>/dev/null || echo 
 
 PR_META=""
 if [[ -n "${PR_SIZE:-}" || -n "${DIFF_LINES:-}" ]]; then
+  PR_SCOPE_HINT=""
+  if [[ -f "${AGENTIC_TMP}/pr-scope.txt" ]]; then
+    PR_SCOPE_HINT="- PR scope: $(cat "${AGENTIC_TMP}/pr-scope.txt")"
+  fi
   PR_META="## PR context
 - Size class: ${PR_SIZE:-unknown}
 - Diff lines (truncated to max_diff_lines=${MAX_DIFF_LINES}): ${DIFF_LINES:-unknown}
 - Changed files (approx): ${CHANGED_FILES:-unknown}
+${PR_SCOPE_HINT}
 - Pipeline review_type: ${REVIEW_TYPE:-full}
 - Separate pipeline jobs (not in check_commands): dependency audit, security/hygiene scans, SonarQube poll, optional Docker/Trivy when configured
 "
@@ -94,6 +99,17 @@ else
 fi
 
 bash "${SCRIPT_DIR}/format-check-coverage.sh"
+
+# Workflow-only PRs: never run sandbox lint/test (repo CI is authoritative)
+if [[ "$(cat "${AGENTIC_TMP}/pr-scope.txt" 2>/dev/null)" == "workflow_only" ]] \
+  && [[ -f "${AGENTIC_TMP}/ai-commands.json" ]]; then
+  jq '.setup_commands = []
+    | .check_commands = []
+    | .minimum_check_coverage.summary = "Sandbox lint/test skipped — workflow-only PR (use your repo CI; actionlint runs in security scans)"' \
+    "${AGENTIC_TMP}/ai-commands.json" > "${AGENTIC_TMP}/ai-commands.json.tmp" \
+    && mv "${AGENTIC_TMP}/ai-commands.json.tmp" "${AGENTIC_TMP}/ai-commands.json"
+  agentic_log "  PR scope workflow_only — cleared Pass 1 sandbox commands"
+fi
 
 log_pass1_summary() {
   local f="${AGENTIC_TMP}/ai-commands.json"

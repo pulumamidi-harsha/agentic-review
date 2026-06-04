@@ -13,6 +13,7 @@ git fetch origin "${GITHUB_BASE_REF}" --depth=50 2>/dev/null || true
 # file tree — two-step to avoid SIGPIPE under pipefail (find | head closes pipe early)
 find . -type f \
   -not -path './.git/*' \
+  -not -path './_agentic_review/*' \
   -not -path './node_modules/*' \
   -not -path './dist/*' \
   -not -path './build/*' \
@@ -38,6 +39,26 @@ CHANGED_FILES=${CHANGED_FILES:-0}
 agentic_log "  PR diff: ${DIFF_LINES} lines across ${CHANGED_FILES} files"
 
 pr_changed_files > "${AGENTIC_TMP}/pr-changed-files.txt" 2>/dev/null || true
+
+# PR scope: workflow-only PRs should not run sandbox lint/test (rely on repo CI + actionlint)
+PR_SCOPE="code"
+if [[ -s "${AGENTIC_TMP}/pr-changed-files.txt" ]]; then
+  workflow_only=true
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    f="${f#./}"
+    if [[ ! "$f" =~ ^\.github/workflows/.+\.(yml|yaml)$ ]]; then
+      workflow_only=false
+      break
+    fi
+  done < "${AGENTIC_TMP}/pr-changed-files.txt"
+  if [[ "$workflow_only" == "true" ]]; then
+    PR_SCOPE="workflow_only"
+    agentic_log "  PR scope: workflow_only — sandbox lint/test will be skipped"
+  fi
+fi
+echo "$PR_SCOPE" > "${AGENTIC_TMP}/pr-scope.txt"
+write_github_output "pr_scope" "$PR_SCOPE"
 
 # IaC / Terraform discovery (deploy roots, PR-affected targets, multi-env layout)
 bash "$(dirname "$0")/discover-iac.sh" 2>/dev/null || echo '{"is_iac_repo":false}' > "${AGENTIC_TMP}/iac-inventory.json"

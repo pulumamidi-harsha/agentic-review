@@ -225,7 +225,7 @@ Wall-clock time is much lower than a single serial job because **checks**, **sca
 
 ## Scripts reference
 
-All scripts live in [`scripts/`](scripts/) and run from the reusable workflow after checkout of this repo into `_agentic_review/`.
+All scripts live in [`scripts/`](scripts/) and run from the reusable workflow after checkout into `/tmp/agentic-review-pipeline` (outside your repo tree, so mypy/tsc/prettier are not polluted).
 
 ### Orchestration & config
 
@@ -422,3 +422,6 @@ The check fails visibly in the PR comment. Fix configs or add targeted custom in
 
 **How do I pin a version?**  
 Set both `uses: org/agentic-review/.github/workflows/ai-review.yml@<sha>` and `pipeline_ref: <sha>`.
+
+**Why does the comment show ❌ Checks failed but my repo CI is green?**  
+Agentic-review runs its **own sandbox** lint/test (Pass 1 planned commands), separate from your PR Checks workflow. Failures are often environmental (pipeline checkout used to live inside the repo, missing Artifactory secrets, workflow-only PRs still running full-repo tests). The **verdict** is based on your diff; sandbox failures are informational when the verdict is APPROVED. Workflow-only PRs now skip sandbox checks entirely.

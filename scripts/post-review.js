@@ -167,6 +167,7 @@ const prSize = process.env.PR_SIZE || 'normal';
 const diffLines = process.env.DIFF_LINES || '0';
 const changedFiles = process.env.CHANGED_FILES || '0';
 const reviewType = process.env.REVIEW_TYPE || 'full';
+const prScope = (process.env.PR_SCOPE || read(`${AGENTIC_TMP}/pr-scope.txt`, 'code')).trim() || 'code';
 
 const durationStr = formatDuration(getDurationSeconds());
 const runUrl = workflowRunUrl();
@@ -217,13 +218,22 @@ function formatChecksSummary() {
 }
 
 const checksStatusLine = formatChecksSummary();
-const checksStatus = Number(failed) > 0
-  ? `❌ ${checksStatusLine}`
-  : setupFailed
-    ? `⚠️ ${checksStatusLine} (setup failed)`
-    : checksRan === 0 && checksPlanned === 0
-      ? '— none configured'
-      : `✅ ${checksStatusLine}`;
+const sandboxInformational = Number(failed) > 0
+  && (reviewData.verdict === 'approve' || reviewData.verdict === 'comment');
+let checksStatus;
+if (prScope === 'workflow_only') {
+  checksStatus = '— skipped (workflow-only PR · use repo CI)';
+} else if (Number(failed) > 0 && sandboxInformational) {
+  checksStatus = `ℹ️ ${checksStatusLine} (sandbox only · not repo CI)`;
+} else if (Number(failed) > 0) {
+  checksStatus = `❌ ${checksStatusLine}`;
+} else if (setupFailed) {
+  checksStatus = `⚠️ ${checksStatusLine} (setup failed)`;
+} else if (checksRan === 0 && checksPlanned === 0) {
+  checksStatus = '— none configured';
+} else {
+  checksStatus = `✅ ${checksStatusLine}`;
+}
 const securityStatus = securityExit === '0' ? '✅ clean' : '⚠️ findings';
 
 const prIssues = (reviewData.issues || []).filter(i => i.is_pr_change !== false);
@@ -270,10 +280,14 @@ const verdictSection = [
 ].filter(Boolean).join('\n');
 
 const failedChecksAlert = Number(failed) > 0 && failedChecks.length
-  ? `\n> ⚠️ **${failed} of ${checksRan} check(s) failed:** ${failedChecks.map(c => `\`${c}\``).join(' · ')} — expand [Full check output](#full-check-output) for logs.\n`
+  ? (sandboxInformational
+    ? `\n> ℹ️ **Sandbox checks:** ${failed} of ${checksRan} did not pass in the agentic runner (this is **not** your repo CI). The verdict above is based on your **PR diff** only.\n`
+    : `\n> ⚠️ **${failed} of ${checksRan} check(s) failed:** ${failedChecks.map(c => `\`${c}\``).join(' · ')} — expand [Full check output](#full-check-output) for logs.\n`)
   : setupFailed
-    ? '\n> ⚠️ **Dependency setup failed** — check failures may be from missing packages, not your code.\n'
-    : '';
+    ? '\n> ⚠️ **Dependency setup failed** — sandbox checks were skipped or may reflect missing secrets (e.g. Artifactory), not your code.\n'
+    : prScope === 'workflow_only'
+      ? '\n> ℹ️ **Sandbox lint/test skipped** — this PR only changes workflows. Trust your repo CI for quality gates.\n'
+      : '';
 
 const checkLogBody = stripCheckResultsHeader(checks);
 const checkLogSummary = checksRan > 0

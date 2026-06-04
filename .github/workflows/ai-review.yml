@@ -61,6 +61,7 @@ concurrency:
 
 env:
   AGENTIC_TMP: /tmp/agentic-review
+  PIPELINE_DIR: /tmp/agentic-review-pipeline
   REVIEW_TYPE: ${{ inputs.review_type }}
   INPUT_REVIEW_TYPE: ${{ inputs.review_type }}
   INPUT_CUSTOM_INSTRUCTIONS: ${{ inputs.custom_instructions }}
@@ -104,6 +105,7 @@ jobs:
       pr_size: ${{ steps.context.outputs.pr_size }}
       diff_lines: ${{ steps.context.outputs.diff_lines }}
       changed_files: ${{ steps.context.outputs.changed_files }}
+      pr_scope: ${{ steps.context.outputs.pr_scope }}
       has_dockerfile: ${{ steps.context.outputs.has_dockerfile }}
       node_version: ${{ steps.pass1.outputs.node_version }}
       python_version: ${{ steps.pass1.outputs.python_version }}
@@ -125,7 +127,7 @@ jobs:
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
-          path: _agentic_review
+          path: ${{ env.PIPELINE_DIR }}
           token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Start review timer
@@ -134,16 +136,16 @@ jobs:
 
       - name: Load repo configuration
         id: config
-        run: bash _agentic_review/scripts/load-config.sh
+        run: bash "$PIPELINE_DIR/scripts/load-config.sh"
 
       - name: Validate custom instructions
-        run: bash _agentic_review/scripts/validate-payload.sh
+        run: bash "$PIPELINE_DIR/scripts/validate-payload.sh"
 
       - name: Gather repository context
         id: context
         env:
           MAX_DIFF_LINES: ${{ steps.config.outputs.max_diff_lines }}
-        run: bash _agentic_review/scripts/gather-context.sh
+        run: bash "$PIPELINE_DIR/scripts/gather-context.sh"
 
       - name: AI Pass 1 — detect stack and commands
         id: pass1
@@ -154,7 +156,7 @@ jobs:
           PR_SIZE: ${{ steps.context.outputs.pr_size }}
           DIFF_LINES: ${{ steps.context.outputs.diff_lines }}
           CHANGED_FILES: ${{ steps.context.outputs.changed_files }}
-        run: bash _agentic_review/scripts/ai-pass1.sh
+        run: bash "$PIPELINE_DIR/scripts/ai-pass1.sh"
 
       - name: Save timer for duration
         run: echo "${{ steps.timer.outputs.start }}" > ${{ runner.temp }}/timer.txt
@@ -176,13 +178,14 @@ jobs:
   checks:
     name: Quality checks and dependency audit
     needs: [gate, prepare]
-    if: needs.gate.outputs.skip != 'true' && needs.prepare.outputs.skip_checks != 'true' && needs.prepare.outputs.review_type != 'security'
+    if: needs.gate.outputs.skip != 'true' && needs.prepare.outputs.skip_checks != 'true' && needs.prepare.outputs.review_type != 'security' && needs.prepare.outputs.pr_scope != 'workflow_only'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
       passed: ${{ steps.run_checks.outputs.passed }}
       failed: ${{ steps.run_checks.outputs.failed }}
       exit_code: ${{ steps.run_checks.outputs.exit_code }}
+      setup_failed: ${{ steps.run_checks.outputs.setup_failed }}
     steps:
       - name: Checkout PR repository
         uses: actions/checkout@v4
@@ -194,7 +197,7 @@ jobs:
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
-          path: _agentic_review
+          path: ${{ env.PIPELINE_DIR }}
           token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Download prepare artifacts
@@ -236,7 +239,7 @@ jobs:
         env:
           ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
           ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
-        run: bash _agentic_review/scripts/configure-npm-registry.sh
+        run: bash "$PIPELINE_DIR/scripts/configure-npm-registry.sh"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -295,12 +298,12 @@ jobs:
       - name: Run quality checks
         id: run_checks
         continue-on-error: true
-        run: bash _agentic_review/scripts/run-checks.sh
+        run: bash "$PIPELINE_DIR/scripts/run-checks.sh"
 
       - name: Dependency audit
         if: needs.prepare.outputs.review_type != 'quick'
         continue-on-error: true
-        run: bash _agentic_review/scripts/run-dep-audit.sh
+        run: bash "$PIPELINE_DIR/scripts/run-dep-audit.sh"
 
       - name: Upload checks artifacts
         uses: actions/upload-artifact@v4
@@ -328,7 +331,7 @@ jobs:
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
-          path: _agentic_review
+          path: ${{ env.PIPELINE_DIR }}
           token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Download prepare artifacts
@@ -340,12 +343,12 @@ jobs:
       - name: Run security scans
         id: security
         continue-on-error: true
-        run: bash _agentic_review/scripts/run-security.sh
+        run: bash "$PIPELINE_DIR/scripts/run-security.sh"
 
       - name: Dependency audit (security mode)
         if: needs.prepare.outputs.review_type == 'security'
         continue-on-error: true
-        run: bash _agentic_review/scripts/run-dep-audit.sh
+        run: bash "$PIPELINE_DIR/scripts/run-dep-audit.sh"
 
       - name: Upload security artifacts
         uses: actions/upload-artifact@v4
@@ -372,7 +375,7 @@ jobs:
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
-          path: _agentic_review
+          path: ${{ env.PIPELINE_DIR }}
           token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Download prepare artifacts
@@ -388,7 +391,7 @@ jobs:
           SECRET_ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
           SECRET_ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
           SECRET_ORG_PAT: ${{ secrets.ORG_PAT || github.token }}
-        run: bash _agentic_review/scripts/run-docker.sh
+        run: bash "$PIPELINE_DIR/scripts/run-docker.sh"
 
       - name: Upload Docker scan artifacts
         uses: actions/upload-artifact@v4
@@ -409,7 +412,7 @@ jobs:
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
-          path: _agentic_review
+          path: ${{ env.PIPELINE_DIR }}
           token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Fetch SonarQube
@@ -418,7 +421,7 @@ jobs:
           GH_TOKEN: ${{ secrets.ORG_PAT || github.token }}
         run: |
           mkdir -p "${AGENTIC_TMP}"
-          bash _agentic_review/scripts/run-sonar.sh
+          bash "$PIPELINE_DIR/scripts/run-sonar.sh"
 
       - name: Upload SonarQube artifacts
         uses: actions/upload-artifact@v4
@@ -439,7 +442,7 @@ jobs:
         with:
           repository: ${{ inputs.pipeline_repository }}
           ref: ${{ inputs.pipeline_ref }}
-          path: _agentic_review
+          path: ${{ env.PIPELINE_DIR }}
           token: ${{ secrets.ORG_PAT || github.token }}
 
       - name: Download prepare artifacts
@@ -495,11 +498,13 @@ jobs:
           CHECKS_PASSED: ${{ needs.checks.outputs.passed || '0' }}
           CHECKS_FAILED: ${{ needs.checks.outputs.failed || '0' }}
           CHECKS_EXIT: ${{ needs.checks.outputs.exit_code || '0' }}
+          SETUP_FAILED: ${{ needs.checks.outputs.setup_failed || 'false' }}
+          PR_SCOPE: ${{ needs.prepare.outputs.pr_scope || 'code' }}
         run: |
           TIMER_FILE="${{ runner.temp }}/timer.txt"
           [[ -f "$TIMER_FILE" ]] && export TIMER_START=$(cat "$TIMER_FILE")
-          export SETUP_FAILED="${{ needs.checks.result == 'failure' && 'true' || 'false' }}"
-          bash _agentic_review/scripts/ai-pass2.sh
+          export SETUP_FAILED="${{ needs.checks.outputs.setup_failed || 'false' }}"
+          bash "$PIPELINE_DIR/scripts/ai-pass2.sh"
 
       - name: Post review to PR
         uses: actions/github-script@v7
@@ -508,7 +513,9 @@ jobs:
           CHECKS_PASSED: ${{ needs.checks.outputs.passed || '0' }}
           CHECKS_FAILED: ${{ needs.checks.outputs.failed || '0' }}
           CHECKS_EXIT: ${{ needs.checks.outputs.exit_code || '0' }}
-          SETUP_FAILED: ${{ needs.checks.result == 'failure' && 'true' || 'false' }}
+          SETUP_FAILED: ${{ needs.checks.outputs.setup_failed || 'false' }}
+          PR_SCOPE: ${{ needs.prepare.outputs.pr_scope || 'code' }}
+          PIPELINE_DIR: ${{ env.PIPELINE_DIR }}
           DOCKER_FOUND: ${{ needs.docker.outputs.docker_found || 'false' }}
           SECURITY_EXIT: ${{ needs.scans.outputs.security_exit || '0' }}
           PR_SIZE: ${{ needs.prepare.outputs.pr_size }}
@@ -524,7 +531,7 @@ jobs:
         with:
           script: |
             const path = require('path');
-            const modPath = path.join(process.env.GITHUB_WORKSPACE, '_agentic_review', 'scripts', 'post-review.js');
+            const modPath = path.join(process.env.PIPELINE_DIR || '/tmp/agentic-review-pipeline', 'scripts', 'post-review.js');
             const { body, reviewData, COMMENT_MARKER } = require(modPath);
 
             const isAiComment = (c) => {

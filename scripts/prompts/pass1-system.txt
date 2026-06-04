@@ -116,6 +116,7 @@ minimum_check_coverage.summary: 1–2 sentences. Gap = both repo_configured and 
 PIPELINE CONTEXT (in user message when present):
 - review_type quick: fewer checks; document skipped categories in minimum_check_coverage.
 - review_type security: check_commands may be []; still fill minimum_check_coverage recommendations.
+- pr_scope workflow_only (in user message): PR changes ONLY .github/workflows/* — emit setup_commands: [] and check_commands: []. Repo CI is authoritative; actionlint runs in security scans. Still fill minimum_check_coverage noting sandbox checks skipped.
 - Separate jobs (mark pipeline_planned with notes): dependency audit (uses dependency_audit.cmd), security/hygiene scans, SonarQube, optional Docker/Trivy.
 
 CUSTOM INSTRUCTIONS (when provided in user message):
