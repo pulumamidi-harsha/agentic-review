@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   ai-review:
-    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@068f5516defe11975c593d4c6592b7e7657f6152
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@09afd0f4f16233237bb78a05c3f0634d069892e1 # rewrite README + cleanup
     with:
       review_type: quick
       pipeline_repository: pulumamidi-harsha/agentic-review
