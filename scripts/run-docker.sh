@@ -208,9 +208,18 @@ while IFS= read -r dockerfile; do
 
       if [[ $TRIVY_EXIT -ne 0 ]]; then
         echo "  RESULT: TRIVY FOUND VULNERABILITIES"
+        # Filter to vulnerability detail lines + summary; trivy lists thousands of
+        # clean package rows first, so a head-truncation hides the actual findings.
+        TRIVY_FILTERED=$(echo "$TRIVY_OUTPUT" | awk '
+          /^Report Summary/ { in_summary=1 }
+          in_summary && /^[A-Z]/ && !/^Report Summary/ && !/^Total:/ { in_summary=0 }
+          in_summary { print; next }
+          /CRITICAL|HIGH|Total:|Severity:|^[┌├└]/ { print }
+        ' | tail -c 6000)
+        [[ -z "$TRIVY_FILTERED" ]] && TRIVY_FILTERED="${TRIVY_OUTPUT:(-6000)}"
         DOCKER_RESULTS+="### Trivy Scan: ${dockerfile} — ⚠️ VULNERABILITIES FOUND"$'\n'
         DOCKER_RESULTS+='```'$'\n'
-        DOCKER_RESULTS+="${TRIVY_OUTPUT:0:4000}"$'\n'
+        DOCKER_RESULTS+="${TRIVY_FILTERED}"$'\n'
         DOCKER_RESULTS+='```'$'\n\n'
       else
         echo "  RESULT: TRIVY PASSED (no HIGH/CRITICAL vulnerabilities)"

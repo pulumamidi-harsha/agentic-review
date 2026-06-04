@@ -302,11 +302,23 @@ jobs:
       - name: Run quality checks
         id: run_checks
         continue-on-error: true
+        env:
+          ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+          ARTIFACTORY_USER_NAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_USER_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+          PIP_NO_INPUT: "1"
         run: bash "$PIPELINE_DIR/scripts/run-checks.sh"
 
       - name: Dependency audit
         if: needs.prepare.outputs.review_type != 'quick'
         continue-on-error: true
+        env:
+          ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+          ARTIFACTORY_USER_NAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_USER_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+          PIP_NO_INPUT: "1"
         run: bash "$PIPELINE_DIR/scripts/run-dep-audit.sh"
 
       - name: Upload checks artifacts
