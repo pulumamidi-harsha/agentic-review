@@ -40,23 +40,8 @@ agentic_log "  PR diff: ${DIFF_LINES} lines across ${CHANGED_FILES} files"
 
 pr_changed_files > "${AGENTIC_TMP}/pr-changed-files.txt" 2>/dev/null || true
 
-# PR scope: workflow-only PRs should not run sandbox lint/test (rely on repo CI + actionlint)
+# PR scope: always run sandbox lint/test (workflow_only auto-skip disabled).
 PR_SCOPE="code"
-if [[ -s "${AGENTIC_TMP}/pr-changed-files.txt" ]]; then
-  workflow_only=true
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    f="${f#./}"
-    if [[ ! "$f" =~ ^\.github/workflows/.+\.(yml|yaml)$ ]]; then
-      workflow_only=false
-      break
-    fi
-  done < "${AGENTIC_TMP}/pr-changed-files.txt"
-  if [[ "$workflow_only" == "true" ]]; then
-    PR_SCOPE="workflow_only"
-    agentic_log "  PR scope: workflow_only — sandbox lint/test will be skipped"
-  fi
-fi
 echo "$PR_SCOPE" > "${AGENTIC_TMP}/pr-scope.txt"
 write_github_output "pr_scope" "$PR_SCOPE"
 

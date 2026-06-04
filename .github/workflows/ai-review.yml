@@ -180,7 +180,7 @@ jobs:
   checks:
     name: Quality checks and dependency audit
     needs: [gate, prepare]
-    if: needs.gate.outputs.skip != 'true' && needs.prepare.outputs.skip_checks != 'true' && needs.prepare.outputs.review_type != 'security' && needs.prepare.outputs.pr_scope != 'workflow_only'
+    if: needs.gate.outputs.skip != 'true' && needs.prepare.outputs.skip_checks != 'true' && needs.prepare.outputs.review_type != 'security'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
