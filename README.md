@@ -1,237 +1,69 @@
-# Agentic Review — AI-Powered PR Review Pipeline
+# Agentic Review
 
-A **centralized, reusable** GitHub Actions workflow that automatically reviews pull requests using AI. It detects your tech stack, runs quality checks, performs security scans, and posts a detailed review — all without any per-repo configuration.
+**A centralized GitHub Actions workflow that reviews pull requests with AI.**
 
-> **One workflow. Any language. Zero configuration.**
+Your repo adds a small caller workflow. When someone opens or updates a PR, this pipeline:
 
----
+1. **Reads** the repository (configs, diff, Terraform layout)
+2. **Decides** what to run (lint, test, validate) — from repo files, not hard-coded language rules
+3. **Executes** those commands and security scans in parallel
+4. **Reviews** the diff + all results with a second AI pass
+5. **Posts** one updated PR comment, a GitHub review, and outcome labels
 
-## Table of Contents
-
-1. [How It Works](#how-it-works)
-2. [Pipeline Stages (Step by Step)](#pipeline-stages-step-by-step)
-3. [Quick Start (2 Minutes)](#quick-start)
-4. [Custom Instructions](#custom-instructions)
-5. [PR Review Status (Approve / Request Changes)](#pr-review-status)
-6. [Security Filtering](#security-filtering)
-7. [What the PR Comment Looks Like](#what-the-pr-comment-looks-like)
-8. [Supported Stacks](#supported-stacks)
-9. [Docker Build & Trivy Scan](#docker-build--trivy-scan)
-10. [Security & File Hygiene Scans](#security--file-hygiene-scans)
-11. [SonarQube Integration](#sonarqube-integration)
-12. [Dependency Vulnerability Audit](#dependency-vulnerability-audit)
-13. [Monorepo Support](#monorepo-support)
-14. [Per-Repo Configuration](#per-repo-configuration)
-15. [Design Principles](#design-principles)
-16. [FAQ](#faq)
+> **One reusable workflow. Any stack. Works with zero config — optional plain-English instructions when you need them.**
 
 ---
 
-## Review modes (`review_type`)
+## Table of contents
 
-| Mode | Description |
-|------|-------------|
-| `full` (default) | Stack detection, CI checks, Docker/Trivy, security scans, dependency audit, SonarQube, AI review |
-| `quick` | Faster: skips Docker, dependency audit, and heavy repo-wide hygiene scans |
-| `security` | Skips AI-determined lint/test; focuses on security scans, Docker, Trivy, dependency audit |
-
-```yaml
-jobs:
-  ai-review:
-    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
-    with:
-      review_type: quick
-```
-
-## Parallel pipeline
-
-The workflow runs **multiple jobs in parallel** after context preparation:
-
-1. **prepare** — config, diff, AI Pass 1 (stack detection)
-2. In parallel: **checks**, **scans**, **docker** (if applicable), **sonar**
-3. **finalize** — AI Pass 2, PR comment, review status
-
-This reduces wall-clock time compared to a single serial job.
-
-## How It Works
-
-When a PR is opened or updated on any repo that calls this workflow:
-
-1. AI **reads** your repository (file tree, configs, package.json, Makefile, etc.)
-2. AI **decides** what to run (lint, test, build, type-check) — based on YOUR config
-3. Pipeline **executes** those commands and captures results
-4. AI **reviews** the code changes alongside all results
-5. Pipeline **posts** a structured comment and **submits a GitHub review** (approve/request changes)
-
-The entire process is **informational** — it never blocks merging unless you configure branch protection rules to require the AI review.
+- [What this does](#what-this-does)
+- [How to use it](#how-to-use-it)
+  - [Without custom instructions (recommended start)](#without-custom-instructions-recommended-start)
+  - [With custom instructions (when you need them)](#with-custom-instructions-when-you-need-them)
+- [What happens when you open a PR](#what-happens-when-you-open-a-pr)
+- [Pipeline jobs (parallel architecture)](#pipeline-jobs-parallel-architecture)
+- [Scripts reference](#scripts-reference)
+- [Review modes and outcomes](#review-modes-and-outcomes)
+- [Monorepos and Terraform / IaC repos](#monorepos-and-terraform--iac-repos)
+- [Configuration reference](#configuration-reference)
+- [Repository layout](#repository-layout)
+- [FAQ](#faq)
 
 ---
 
-## Pipeline Stages (Step by Step)
+## What this does
 
-```
-PR Opened / Updated
-       │
-       ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  1. CHECK SKIP LABEL                                             │
-│     If PR has label "skip-ai-review" or "no-review" → stop      │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  2. LOAD CONFIGURATION                                           │
-│     Read .agentic-review.yml (if exists) for repo-specific       │
-│     settings and custom instructions                             │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  3. VALIDATE CUSTOM INSTRUCTIONS (Security Filtering)            │
-│     If custom_instructions provided → analyze each line:         │
-│     ✅ Accept: positive instructions (run X, use Y, build with Z)│
-│     ❌ Reject: suppression ("skip lint"), verdict manipulation,  │
-│        credential values, data exfiltration attempts             │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  4. GATHER REPOSITORY CONTEXT                                    │
-│     • Build file tree (excludes node_modules, .venv, dist, etc.)│
-│     • Generate PR diff (excludes lock files)                     │
-│     • Read ALL config files (package.json, pyproject.toml,       │
-│       go.mod, Makefile, Dockerfile, tsconfig.json, etc.)         │
-│     • Analyze PR size (normal / large / very_large)              │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  5. AI PASS 1: Stack Detection & Command Generation              │
-│     Send file tree + configs + custom instructions to LLM        │
-│     AI returns JSON with:                                        │
-│     • Detected stack (language, framework, package manager)      │
-│     • Setup commands (install dependencies)                      │
-│     • Check commands (lint, test, build, type-check)             │
-│     • Runtime requirements (Node 20, Python 3.11, etc.)          │
-│     • Custom instruction analysis (MATCH/OVERRIDE/ADDED)         │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  6. SETUP RUNTIMES (Conditional)                                 │
-│     Based on AI response, installs:                              │
-│     • Node.js + pnpm/yarn/npm (auto-detected from packageManager)│
-│     • Python (version from pyproject.toml or AI)                 │
-│     • Go (version from go.mod)                                   │
-│     • Ruby, Java, .NET, PHP, Elixir, Terraform (if detected)    │
-│     • Private registry auth (Artifactory — only if creds exist)  │
-│     Only the needed runtimes are installed.                      │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  7. EXECUTE AI-DETERMINED CHECKS                                 │
-│     Runs setup_commands → then each check_command sequentially:  │
-│     • Captures stdout/stderr and exit code per command           │
-│     • Records PASSED/FAILED status                               │
-│     • Continues even if one check fails                          │
-│     Example output:                                              │
-│       ✅ pnpm lint — PASSED                                      │
-│       ✅ pnpm typecheck — PASSED                                 │
-│       ❌ pnpm test — FAILED (exit 1)                             │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  8. DOCKER BUILD & TRIVY SCAN (if Dockerfile exists)             │
-│     • Auto-detects ALL Dockerfiles in repo                       │
-│     • Smart ARG detection → maps to available secrets            │
-│     • Runs docker build (with BuildKit if needed)                │
-│     • If build passes → Trivy scans for HIGH/CRITICAL CVEs      │
-│     • Reports vulnerabilities with CVE IDs and fix versions      │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  9. SECURITY & FILE HYGIENE SCANS (7 automated scans)            │
-│     1. Gitleaks — hardcoded secrets                              │
-│     2. Sensitive file detection (.env, .pem, .key, etc.)         │
-│     3. EOF newline check (POSIX compliance)                      │
-│     4. Large file detection (>5MB, should use Git LFS)           │
-│     5. TODO/FIXME/HACK markers in PR changes                     │
-│     6. License file existence                                    │
-│     7. YAML/JSON/XML syntax validation of changed files          │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  10. DEPENDENCY VULNERABILITY AUDIT                              │
-│      • Node.js → npm audit                                       │
-│      • Python → pip-audit                                        │
-│      Reports known CVEs in dependencies                          │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  11. SONARQUBE RESULTS (from existing check runs)                │
-│      • Fetches SonarQube Quality Gate status via GitHub Checks API│
-│      • Reports pass/fail + issue details                         │
-│      • Completely skipped if SonarQube is not configured         │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  12. AI PASS 2: Code Review                                      │
-│      Sends to LLM:                                               │
-│      • PR diff (code changes)                                    │
-│      • All check results (what passed/failed)                    │
-│      • Docker + Trivy results                                    │
-│      • Security scan results                                     │
-│      • SonarQube results                                         │
-│      • Custom instructions context                               │
-│                                                                  │
-│      AI reviews for (priority order):                            │
-│      1. Security (OWASP Top 10)                                  │
-│      2. Reliability (null handling, error handling)               │
-│      3. Correctness (logic errors, edge cases)                   │
-│      4. Performance (N+1, unnecessary allocations)               │
-│      5. Maintainability (duplication, naming)                    │
-│      6. Testing (untested paths)                                 │
-│      7. Breaking changes (API contracts, schema)                 │
-│                                                                  │
-│      Returns: verdict (approve/needs_work/reject) + issues       │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  13. POST/UPDATE PR COMMENT                                      │
-│      • Finds existing bot comment → updates it (no spam)         │
-│      • Includes: summary, stack, checks, issues, positives      │
-│      • Collapsible sections for detailed output                  │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  14. SUBMIT PR REVIEW STATUS                                     │
-│      • Dismisses any previous bot reviews                        │
-│      • Submits new review: APPROVE or REQUEST_CHANGES            │
-│      • Shows as green checkmark or blocking review on PR         │
-└──────────────────────────────┬──────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  15. WRITE STEP SUMMARY DASHBOARD                                │
-│      • GitHub Actions step summary with all metrics              │
-└─────────────────────────────────────────────────────────────────┘
-```
+| Layer | What happens |
+|-------|----------------|
+| **Detection** | AI Pass 1 reads your file tree, config files, and (for infra) a pre-built Terraform inventory — then outputs setup + check commands as JSON |
+| **Execution** | The pipeline runs those commands verbatim (`pnpm lint`, `terraform validate`, etc.) — it does not guess package managers at runtime |
+| **Security** | Gitleaks, sensitive files, Docker/Trivy, tfsec, tflint, checkov, dependency audit — in parallel where possible |
+| **Review** | AI Pass 2 reads the PR diff + all scan/check output and returns a verdict scoped to **changed files** |
+| **Feedback** | One PR comment (updated in place), GitHub APPROVE / REQUEST_CHANGES, and labels on the PR list |
+
+**Design choice:** There is no `if language == "python"` in the workflow. Pass 1 is the “brain” for stack detection; bash scripts are the “hands” that run what Pass 1 planned.
 
 ---
 
-## Quick Start
+## How to use it
 
-### Step 1: Add Secrets
+### Step 1 — Add secrets
 
-Go to your repo **Settings → Secrets and variables → Actions** and add:
+**Settings → Secrets and variables → Actions** (org-level recommended):
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `AI_API_KEY` | ✅ | API key for the LLM service (MGA) |
-| `AI_API_ENDPOINT` | ✅ | **Full** chat completions URL (must end with `/chat/completions`, e.g. `…/api/v2/chat/completions`) |
-| `ORG_PAT` | Optional* | Org PAT for private cross-repo checkout; public pipeline repos can omit (uses `github.token`) |
-| `ARTIFACTORY_USERNAME` | Optional | Bayer Artifactory username (for Docker builds) |
-| `ARTIFACTORY_AUTH_TOKEN` | Optional | Bayer Artifactory auth token (for Docker builds) |
+| Secret | Required | Purpose |
+|--------|----------|---------|
+| `AI_API_KEY` | Yes | LLM API key |
+| `AI_API_ENDPOINT` | Yes | Full chat completions URL (must include `/chat/completions`) |
+| `ORG_PAT` | Optional | Cross-repo checkout for private pipeline repo; public repos can omit |
+| `ARTIFACTORY_USERNAME` | Optional | Private npm / Docker builds |
+| `ARTIFACTORY_AUTH_TOKEN` | Optional | Private npm / Docker builds |
 
-> **Tip:** Set `AI_API_KEY` and `AI_API_ENDPOINT` at the **organization level** so all repos get them automatically.
+**MGA example endpoint:** `https://chat.int.bayer.com/api/v2/chat/completions`
 
-### Step 2: Add the Caller Workflow
+### Step 2 — Add the caller workflow
 
-Create `.github/workflows/ai-review.yml` in your repo:
+Create `.github/workflows/ai-review.yml` in **your** repo:
 
 ```yaml
 name: AI PR Review
@@ -243,398 +75,350 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  issues: write   # PR labels: ai-approved, ai-rejected, ai-review-suggestions
+  issues: write   # ai-approved / ai-rejected / ai-review-suggestions labels
 
 jobs:
   ai-review:
-    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
-    secrets:
-      AI_API_KEY: ${{ secrets.AI_API_KEY }}
-      AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
-      ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY }}
-      ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
-      ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
-```
-
-**That's it.** No other configuration needed. Open a PR and the review appears in ~2 minutes.
-
-### Step 3 (Optional): Add Custom Instructions
-
-If you want to give the AI extra context about your repo:
-
-```yaml
-jobs:
-  ai-review:
-    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
+    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@068f551
     with:
-      custom_instructions: |
-        Our Docker build needs artifactory username and auth token as build arguments.
-        We use pnpm as our package manager.
-        Run type checking before linting.
+      pipeline_repository: bayer-int/agentic-review
+      pipeline_ref: 068f551
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
-      ORG_PAT: ${{ secrets.ORG_REPOS_INTERNAL_READ_ONLY }}
+      ORG_PAT: ${{ secrets.ORG_PAT || github.token }}
 ```
+
+Pin a **commit SHA** (not `@main`) in production so all repos run the same pipeline version.
+
+**Examples:** [`examples/caller-workflow-minimal.yml`](examples/caller-workflow-minimal.yml) · [`examples/caller-workflow.yml`](examples/caller-workflow.yml) · [`examples/monorepo-demo/`](examples/monorepo-demo/)
 
 ---
 
-## Custom Instructions
+### Without custom instructions (recommended start)
 
-Tell the AI what your repo needs in **plain English**. No YAML configs, no commands — just describe what you need and the AI translates it into actions.
+Use this when:
 
-### Where to Put Them
+- Your repo has normal config files (`package.json`, `pyproject.toml`, `Makefile`, `*.tf`, CI workflows)
+- Layout follows common patterns (single app, monorepo with `apps/` + `services/`, Terraform with `backend.tf`)
 
-**Option A:** In the caller workflow (`with: custom_instructions:`)
+**What the pipeline does:**
 
-**Option B:** In `.agentic-review.yml` in your repo root:
+1. Reads configs from disk (repo files first — never overrides your `packageManager`, Python version, etc.)
+2. For Terraform repos, `discover-iac.sh` maps deploy roots, environments, and `terraform.tfvars` **before** Pass 1
+3. Pass 1 plans commands; Pass 2 reviews the diff
+
+**You add:** caller workflow + secrets. **Nothing else.**
+
+---
+
+### With custom instructions (when you need them)
+
+Use this when auto-detection is not enough:
+
+- Multi-env Terraform with non-obvious layout (data platform + VPC + many stacks)
+- Private registry / Docker build args
+- “Run checks only in this folder”
+- Terragrunt / Atlantis conventions
+
+**Two ways to provide instructions** (plain English — no shell commands required):
+
+| Method | Where |
+|--------|--------|
+| **Workflow input** | `with: custom_instructions: \|` in caller workflow |
+| **Repo file** | `.agentic-review.yml` → `custom_instructions:` block |
+
 ```yaml
+# .agentic-review.yml (optional)
 custom_instructions: |
-  Our Docker build needs artifactory username and auth token as build arguments.
-  We use pnpm as our package manager.
-  Run type checking before linting.
-  No hardcoded API URLs — must come from environment variables.
+  We use pnpm. Terraform roots are under eks-platform/environments/{dev,staging,prod}.
+  When shared modules change, validate all three environments.
+  Docker build needs ARTIFACTORY_USERNAME and ARTIFACTORY_AUTH_TOKEN as build args.
 ```
 
-### How They Work
+**Priority:** Owner instructions **win** over auto-detection on conflict.  
+**Security:** Each line is validated — suppression (“skip lint”), verdict manipulation (“always approve”), and secret values are **rejected** (see [`scripts/validate-payload.sh`](scripts/validate-payload.sh)).
 
-1. Owner writes plain English instructions
-2. Pipeline validates each instruction for security (see [Security Filtering](#security-filtering))
-3. Validated instructions are injected into AI Pass 1 with **priority over auto-detection**
-4. AI interprets and translates into proper commands
-5. AI reports decisions: MATCH (agreed) / OWNER ADDED / OWNER OVERRIDE
-
-### Examples
-
-| What You Write | What AI Does |
-|---------------|-------------|
-| "We use pnpm" | Uses `pnpm install` instead of `npm ci` |
-| "Docker build needs artifactory token as build arg" | Adds `--build-arg ARTIFACTORY_AUTH_TOKEN=<secret>` |
-| "Run type checking before linting" | Reorders commands: typecheck first, then lint |
-| "The e2e folder has its own dependencies" | Adds `cd e2e && npm ci` to setup commands |
-| "Check for console.log in production code" | AI checks for console.log in review |
-
-### Priority Rules
-
-- **Owner says X, AI detected X** → MATCH (both agree)
-- **Owner mentions something AI missed** → OWNER ADDED (included)
-- **Owner says X, AI detected Y** → OWNER OVERRIDE (owner wins)
+| You write | AI does |
+|-----------|---------|
+| “We use pnpm” | `pnpm install`, not `npm ci` |
+| “Validate staging data-platform on tfvars changes” | `cd …/staging && terraform validate -var-file=terraform.tfvars` |
+| “Docker needs artifactory token as build arg” | Maps to `ARTIFACTORY_AUTH_TOKEN` secret name (never the value) |
 
 ---
 
-## PR Review Status
+## What happens when you open a PR
 
-The pipeline doesn't just post a comment — it **submits a real GitHub PR review**:
+```mermaid
+flowchart TB
+  subgraph trigger [PR opened or updated]
+    A[GitHub fires caller workflow]
+  end
 
-| AI Verdict | GitHub Review | Visual Effect |
-|-----------|--------------|--------------|
-| `approve` | ✅ APPROVE | Green checkmark on PR |
-| `needs_work` | ❌ REQUEST_CHANGES | Blocks merge (dismissible) |
-| `reject` | ❌ REQUEST_CHANGES | Blocks merge (dismissible) |
+  subgraph gate [Job: gate]
+    B{Label skip-ai-review<br/>or no-review?}
+    B -->|yes| Z[Stop — no review]
+    B -->|no| C[Continue]
+  end
 
-### How It Works
+  subgraph prepare [Job: prepare — serial]
+    C --> D[load-config.sh<br/>Read .agentic-review.yml]
+    D --> E[validate-payload.sh<br/>Filter custom instructions]
+    E --> F[gather-context.sh<br/>Diff + file tree + configs]
+    F --> G[discover-iac.sh<br/>Terraform roots if IaC repo]
+    G --> H[ai-pass1.sh<br/>LLM → setup + check commands JSON]
+    H --> I[Upload artifacts to parallel jobs]
+  end
 
-1. Pipeline runs all checks and AI review
-2. AI returns a verdict based on findings
-3. Pipeline **dismisses** any previous bot reviews (so there's only one)
-4. Pipeline **submits** the new review status
+  subgraph parallel [Jobs run in parallel]
+    J[checks<br/>run-checks.sh + run-dep-audit.sh]
+    K[scans<br/>run-security.sh + extra-scans.sh]
+    L[docker<br/>run-docker.sh + Trivy]
+    M[sonar<br/>run-sonar.sh]
+  end
 
-### What Affects the Verdict
+  subgraph finalize [Job: finalize — serial]
+    I --> J & K & L & M
+    J & K & L & M --> N[Download all artifacts]
+    N --> O[ai-pass2.sh<br/>LLM review of diff + results]
+    O --> P[post-review.js<br/>PR comment + labels + review]
+  end
 
-| Condition | Effect |
-|-----------|--------|
-| Clean code, all checks pass | APPROVE |
-| Minor issues (style, small bugs) | NEEDS WORK (request changes) |
-| Critical security issue in PR | REJECT (request changes) |
-| SonarQube Quality Gate FAILED | REJECT |
-| Pre-existing issues (base image CVEs) | Does NOT affect verdict |
-| Scanner tool failures | Does NOT affect verdict |
-
----
-
-## Security Filtering
-
-Custom instructions are validated before reaching the AI. This prevents prompt injection attacks.
-
-### What Gets Accepted ✅
-
-- Positive instructions: "run X", "use Y", "build with Z", "install dependencies in folder"
-- Context: "this repo uses X", "our Docker needs Y", "we depend on Z"
-
-### What Gets Rejected ❌
-
-| Category | Example | Why |
-|---------|---------|-----|
-| Suppression | "Don't run linting", "Skip security checks" | Attempts to disable safety checks |
-| Verdict manipulation | "Always approve", "Never reject" | Attempts to override AI judgment |
-| Credential values | "password=abc123" | Actual secret values must never be in config |
-| Data exfiltration | "curl POST results to external URL" | Attempts to steal code/secrets |
-
-### What Happens When Instructions Are Rejected
-
-- Rejected instructions are logged (visible in pipeline output)
-- Remaining valid instructions still work normally
-- The pipeline never fails — it just ignores bad instructions
-
----
-
-## What the PR Comment Looks Like
-
-```
-┌────────────────────────────────────────────────────────────────────┐
-│  🤖 AI Code Review — ✅ APPROVED                                    │
-│                                                                    │
-│  > This PR adds input validation to the API endpoints.             │
-│  > Clean changes with no security or reliability issues.           │
-│                                                                    │
-│  | Stack | Checks | Security | Confidence | Duration |             │
-│  |-------|--------|----------|------------|----------|             │
-│  | Python / FastAPI / pip | ✅ 3 passed | ✅ | 92% | 1m 45s |    │
-│                                                                    │
-│  ### 📋 Repository Owner Instructions (if custom_instructions)     │
-│  > Our Docker build needs artifactory username and auth token...   │
-│  AI Priority Analysis: 3 instructions accepted, no conflicts       │
-│                                                                    │
-│  ### 🏥 Repository Health — ⚠️ NEEDS ATTENTION                     │
-│  Pre-existing issues (not from this PR):                           │
-│  - Base image has HIGH CVEs  - Missing LICENSE file                │
-│                                                                    │
-│  ### CI Analysis                                                   │
-│  All linting, type checking, and tests pass cleanly.               │
-│                                                                    │
-│  ### ✅ What's Good                                                 │
-│  - Input validation using Pydantic models                          │
-│  - Comprehensive test coverage for edge cases                      │
-│                                                                    │
-│  ### 💡 Suggestions                                                 │
-│  - Consider adding rate limiting to the new endpoint               │
-│                                                                    │
-│  📋 Commands AI decided to run (expandable)                        │
-│  📊 Full Check Output (expandable)                                 │
-│  🐳 Docker Build & Trivy Scan (expandable)                         │
-│  🔒 Security & File Hygiene Scans (expandable)                     │
-│  📦 Dependency Vulnerability Audit (expandable)                    │
-│  📊 SonarQube Analysis (expandable)                                │
-└────────────────────────────────────────────────────────────────────┘
+  A --> B
 ```
 
-The comment **updates in place** on re-runs (never creates duplicates).
+### Prepare job (detail)
+
+| Step | Script | Output |
+|------|--------|--------|
+| Load config | `load-config.sh` | Skip flags, `max_diff_lines`, file-based custom instructions |
+| Validate instructions | `validate-payload.sh` | Safe instruction text for Pass 1 |
+| Gather context | `gather-context.sh` | PR diff, changed files, config snippets |
+| IaC discovery | `discover-iac.sh` | Deploy roots, PR-affected envs, tfvars map |
+| AI Pass 1 | `ai-pass1.sh` | `ai-commands.json` — commands to run |
+| Timer | workflow | Duration for PR comment |
+
+### Finalize job (detail)
+
+| Step | Script | Output |
+|------|--------|--------|
+| AI Pass 2 | `ai-pass2.sh` | Verdict, issues, rationale (scoped to changed files) |
+| Post review | `post-review.js` | Updated comment, GitHub review, PR labels |
 
 ---
 
-## Supported Stacks
+## Pipeline jobs (parallel architecture)
 
-The AI adapts to **any** tech stack by reading your configuration files:
+| Job | When it runs | What it does |
+|-----|--------------|--------------|
+| **gate** | Always | Skip if `skip-ai-review` / `no-review` label |
+| **prepare** | After gate | Config, context, IaC inventory, Pass 1 |
+| **checks** | `skip_checks != true`, not `security`-only | Installs runtimes Pass 1 requested → runs setup + check commands |
+| **scans** | `skip_security != true` | Gitleaks, hygiene, actionlint, tfsec, tflint, checkov |
+| **docker** | Dockerfile found, not `quick` | Build + Trivy HIGH/CRITICAL |
+| **sonar** | Always (best-effort) | Reads SonarQube check runs on the PR |
+| **finalize** | After parallel jobs | Pass 2 + comment + review + labels |
 
-| Stack | Detected From | Typical Commands |
-|-------|--------------|-----------------|
-| **Node.js / TypeScript** | `package.json`, `tsconfig.json` | `pnpm install`, `pnpm lint`, `pnpm test` |
-| **Python** | `pyproject.toml`, `requirements.txt` | `pip install`, `ruff check .`, `pytest` |
-| **Go** | `go.mod` | `go mod download`, `go vet ./...`, `go test ./...` |
-| **Rust** | `Cargo.toml` | `cargo check`, `cargo clippy`, `cargo test` |
-| **Ruby** | `Gemfile`, `.rubocop.yml` | `bundle install`, `rubocop`, `rake test` |
-| **Elixir** | `mix.exs` | `mix deps.get`, `mix credo`, `mix test` |
-| **PHP** | `composer.json` | `composer install`, `phpstan`, `phpunit` |
-| **Java / Kotlin** | `pom.xml`, `build.gradle` | `mvn verify`, `gradle check` |
-| **C# / .NET** | `*.csproj`, `*.sln` | `dotnet build`, `dotnet test` |
-| **Terraform** | `*.tf` | `terraform fmt -check`, `terraform validate` |
-| **Helm** | `Chart.yaml` | `helm lint`, `helm template` |
-| **Kubernetes** | `k8s/`, `manifests/` | `kubeval`, `kubeconform` |
-
-The AI **never guesses** — it only runs commands your config supports.
+Wall-clock time is much lower than a single serial job because **checks**, **scans**, **docker**, and **sonar** run at the same time after **prepare** finishes.
 
 ---
 
-## Docker Build & Trivy Scan
+## Scripts reference
 
-If your repo contains a Dockerfile, the pipeline automatically:
+All scripts live in [`scripts/`](scripts/) and run from the reusable workflow after checkout of this repo into `_agentic_review/`.
 
-1. **Detects** all Dockerfiles (`Dockerfile`, `Dockerfile.*`, `*.Dockerfile`)
-2. **Maps build ARGs** to available secrets (ARTIFACTORY_USERNAME, ARTIFACTORY_AUTH_TOKEN, ORG_PAT)
-3. **Handles BuildKit secrets** (`--mount=type=secret,id=...`)
-4. **Builds** the image (reports missing secrets clearly if build fails)
-5. **Scans** with Trivy for HIGH/CRITICAL CVEs
-6. **Reports** vulnerabilities with CVE IDs and fix versions
+### Orchestration & config
 
-| Scenario | Behavior |
-|----------|----------|
-| No Dockerfile | Skipped entirely |
-| Build fails (missing secrets) | Clear message + which secrets to add |
-| Build passes, no CVEs | Reports clean scan |
-| Build passes, CVEs found | Lists vulnerabilities in PR comment |
+| Script | Role |
+|--------|------|
+| [`common.sh`](scripts/common.sh) | Shared helpers: logging, `AGENTIC_TMP`, diff truncation, changed-file lists |
+| [`load-config.sh`](scripts/load-config.sh) | Reads `.agentic-review.yml`; writes pipeline flags JSON |
+| [`validate-payload.sh`](scripts/validate-payload.sh) | Validates workflow + file custom instructions; blocks injection/suppression |
+| [`gather-context.sh`](scripts/gather-context.sh) | File tree, PR diff, config file contents, calls IaC discovery |
+| [`discover-iac.sh`](scripts/discover-iac.sh) | Finds Terraform deploy roots (`backend.tf`), modules, compositors; PR-scoped validate targets; tfvars map |
+| [`format-check-coverage.sh`](scripts/format-check-coverage.sh) | Formats Pass 1 `minimum_check_coverage` for the PR comment |
 
----
+### AI (LLM)
 
-## Security & File Hygiene Scans
+| Script | Role |
+|--------|------|
+| [`call-llm.sh`](scripts/call-llm.sh) | HTTP call to OpenAI-compatible API; retries; endpoint normalization |
+| [`ai-pass1.sh`](scripts/ai-pass1.sh) | **Pass 1:** stack detection + command plan → `ai-commands.json` |
+| [`ai-pass1.sh` prompt](scripts/prompts/pass1-system.txt) | System prompt: repo-files-first, monorepo, deep IaC rules |
+| [`ai-pass2.sh`](scripts/ai-pass2.sh) | **Pass 2:** code review from diff + all job artifacts → verdict JSON |
+| [`ai-pass2.sh` prompt](scripts/prompts/pass2-system.txt) | System prompt: verdict scoped to changed files only |
 
-7 automated scans run on every PR:
+### Execution
 
-| # | Scan | What It Detects |
-|---|------|----------------|
-| 1 | **Gitleaks** | Hardcoded secrets, API keys, tokens |
-| 2 | **Sensitive Files** | .env, .pem, .key, credentials.json |
-| 3 | **EOF Newline** | Missing trailing newline in source files |
-| 4 | **Large Files** | Files >5MB (should use Git LFS) |
-| 5 | **TODO/FIXME** | Code markers in PR changes |
-| 6 | **License** | Missing LICENSE file |
-| 7 | **Syntax Validation** | YAML/JSON/XML/GitHub Actions validity |
+| Script | Role |
+|--------|------|
+| [`run-checks.sh`](scripts/run-checks.sh) | Runs Pass 1 `setup_commands` + `check_commands`; filters E2E/out-of-scope |
+| [`run-dep-audit.sh`](scripts/run-dep-audit.sh) | `npm audit`, `pip-audit`, etc. from Pass 1 plan |
+| [`run-security.sh`](scripts/run-security.sh) | Gitleaks, sensitive files, EOF, large files, TODO markers, syntax checks |
+| [`extra-scans.sh`](scripts/extra-scans.sh) | actionlint, hadolint, tfsec, **tflint**, **checkov** (IaC stacks), shellcheck |
+| [`run-docker.sh`](scripts/run-docker.sh) | Docker build + Trivy scan |
+| [`run-sonar.sh`](scripts/run-sonar.sh) | Poll SonarQube GitHub check runs |
+| [`configure-npm-registry.sh`](scripts/configure-npm-registry.sh) | Artifactory npm auth when secrets present |
 
----
+### PR output
 
-## SonarQube Integration
+| Script | Role |
+|--------|------|
+| [`post-review.js`](scripts/post-review.js) | Builds PR comment (verdict first, issues table, collapsibles); sets labels; submits GitHub review |
 
-The pipeline automatically picks up SonarQube results from existing check runs on the PR (via GitHub Checks API). No extra configuration needed.
-
-| Scenario | Behavior |
-|----------|----------|
-| SonarQube not configured | Skipped, no penalty |
-| Quality Gate PASSED | Noted positively, helps approve |
-| Quality Gate FAILED | Forces `reject` verdict |
-| Analysis in progress | Noted, no penalty |
+**Runtime prompts (source of truth):** [`scripts/prompts/pass1-system.txt`](scripts/prompts/pass1-system.txt) · [`scripts/prompts/pass2-system.txt`](scripts/prompts/pass2-system.txt)
 
 ---
 
-## Dependency Vulnerability Audit
+## Review modes and outcomes
 
-| Stack | Command Used |
-|-------|-------------|
-| Node.js (npm/pnpm/yarn) | `npm audit --production` |
-| Python | `pip-audit` (auto-installed) |
+### `review_type`
 
-Results appear in a collapsible section and are fed to the AI for analysis.
+| Mode | Checks | Docker / audit | Typical use |
+|------|--------|----------------|-------------|
+| `full` (default) | Yes | Yes | Production repos |
+| `quick` | Yes | No | Fast feedback (demo monorepo) |
+| `security` | Skipped | Security-focused | Security-only runs |
+
+```yaml
+with:
+  review_type: quick
+```
+
+### Verdict → GitHub
+
+| AI verdict | GitHub review | PR list label | Color |
+|------------|---------------|---------------|-------|
+| `approve` | APPROVE | `ai-approved` | Green |
+| `needs_work` | REQUEST_CHANGES | `ai-review-suggestions` | Red (non-blocking by default) |
+| `reject` | REQUEST_CHANGES | `ai-rejected` | Red |
+
+Pass 2 judges **only files in the PR diff**. Failures in untouched paths (e.g. pre-existing e2e failures) are reported separately — they do not force `needs_work` on your change.
+
+### Skip a PR
+
+Add label: `skip-ai-review` or `no-review`
+
+### PR comment structure
+
+- **Top:** Verdict + short rationale + issue table (in your diff)
+- **Collapsible:** Full check output, repository health, security scans, Docker, SonarQube
+- **Single comment** updated each run (`<!-- agentic-review:comment -->` marker)
 
 ---
 
-## Monorepo Support
+## Monorepos and Terraform / IaC repos
 
-The pipeline automatically handles repositories with multiple stacks in different directories. No configuration needed.
-
-**Example layout** (see [`examples/monorepo-demo/`](examples/monorepo-demo/) for a copy-paste test repo with Node + Python + Terraform):
+### Application monorepo (Node + Python + …)
 
 ```
 my-repo/
-├── apps/web/         ← React/TypeScript
-├── services/api/     ← Python/FastAPI
-└── infra/            ← Terraform
+├── apps/web/          ← Node
+├── services/api/      ← Python
+└── infra/             ← Terraform
 ```
 
-The AI detects 3 stacks and runs commands for each with proper `cd` prefixes. All needed runtimes are installed.
+Pass 1 detects each stack and emits `cd ${WORKDIR}/<dir> && …` commands. No config file required if layout is clear.
+
+**Demo repo:** [`examples/monorepo-demo/`](examples/monorepo-demo/) · live test: [monorepo-ai-review-demo](https://github.com/pulumamidi-harsha/monorepo-ai-review-demo)
+
+### Multi-env Terraform (infra repos)
+
+For repos like `eks-platform/environments/{dev,staging,prod}/`:
+
+| Concept | How we find it |
+|---------|----------------|
+| **Deploy root** | Directory with `backend.tf` or `terragrunt.hcl` |
+| **Env values** | `terraform.tfvars` in that root → validate with `-var-file=terraform.tfvars` |
+| **Shared module change** | Validate **all env roots** in that platform stack |
+| **Single env change** | Validate **that env root only** |
+
+`discover-iac.sh` builds this map **before** Pass 1. Pass 1 uses the inventory + reads your Terraform CI workflow when present.
+
+**Optional `custom_instructions`** still help for Terragrunt, deploy order, or Checkov skip lists.
 
 ---
 
-## Per-Repo Configuration
+## Configuration reference
 
-Optionally create `.agentic-review.yml` in your repo root:
+### `.agentic-review.yml` (all optional)
 
 ```yaml
-# All settings are optional — defaults shown
-skip_docker: false       # Skip Docker build + Trivy scan
-skip_security: false     # Skip security scans
-skip_checks: false       # Skip AI-determined quality checks
-max_diff_lines: 15000    # Max diff lines sent to AI
+skip_docker: false
+skip_security: false
+skip_checks: false
+max_diff_lines: 15000
 
-# Custom instructions (plain English)
 custom_instructions: |
-  We use pnpm as our package manager.
-  Our Docker build needs artifactory username and auth token as build arguments.
+  Plain English hints for Pass 1 and Pass 2.
 ```
 
-### Skip Labels
+Template: [`examples/.agentic-review.yml`](examples/.agentic-review.yml)
 
-Add a label to skip the AI review entirely:
-- `skip-ai-review`
-- `no-review`
+### Caller workflow inputs
 
-### Outcome Labels (set automatically after each review)
+| Input | Default | Purpose |
+|-------|---------|---------|
+| `review_type` | `full` | `full` / `quick` / `security` |
+| `custom_instructions` | — | Overrides / extends repo file instructions |
+| `pipeline_repository` | `pulumamidi-harsha/agentic-review` | Where scripts are checked out from |
+| `pipeline_ref` | `main` | Git ref for scripts (pin SHA in prod) |
 
-Visible on the PR list (like `dependencies` / `javascript`):
-- `ai-approved` — verdict approve (green)
-- `ai-rejected` — verdict reject (red)
-- `ai-review-suggestions` — verdict needs_work: fixable issues in the diff, not blocking merge (red)
+### Supported stacks (via Pass 1 — not hard-coded)
 
-**Caller workflow must include `issues: write`** in `permissions:` (see examples). Labels are created in the repo on first use.
+Node/TS, Python, Go, Rust, Java, Kotlin, Ruby, Elixir, PHP, .NET, Terraform, Helm, CloudFormation, Ansible, Kubernetes manifests.
 
----
+Pass 1 uses **your** scripts and configs (`package.json` scripts, Makefile targets, repo CI) — not invented commands.
 
-## Design Principles
-
-| Principle | How |
-|-----------|-----|
-| **Zero config** | Drop in the 5-line caller workflow + secrets → done |
-| **AI-driven** | No `if language == "python"` logic. The LLM reasons about your repo. |
-| **Defense in depth** | Gitleaks + Trivy + Sensitive Files + AI review + SonarQube |
-| **Centralized** | Fix a bug here → all repos benefit immediately |
-| **Informational** | Never blocks merging by default |
-| **Graceful** | If AI fails or secrets missing → completes without breaking |
-| **Secure** | Custom instructions are validated against prompt injection |
-| **Stack agnostic** | Node.js, Python, Go, Rust, Java, Ruby, Terraform — anything |
+**Out of scope in PR checks:** Cypress/Playwright E2E, live `terraform apply`, deployments, load tests.
 
 ---
 
-## Repository Structure
+## Repository layout
 
 ```
 agentic-review/
-├── .github/
-│   └── workflows/
-│       ├── ai-review.yml          ← Reusable workflow (multi-job orchestrator)
-│       └── ai-review-backup.yml   ← Mirror of ai-review.yml for rollback
+├── .github/workflows/
+│   └── ai-review.yml              # Reusable workflow (gate → prepare → parallel → finalize)
 ├── scripts/
-│   ├── ai-pass1.sh / ai-pass2.sh  ← LLM calls (with retry)
-│   ├── run-checks.sh              ← Quality checks
-│   ├── run-security.sh            ← Gitleaks, hygiene, actionlint, etc.
-│   ├── run-docker.sh              ← Docker + Trivy
-│   └── run-sonar.sh               ← SonarQube via Checks API (with poll)
-├── prompts/
-│   ├── detect-and-command.md      ← AI Pass 1 prompt documentation
-│   ├── review-results.md          ← AI Pass 2 prompt documentation
-│   ├── pr-review.md               ← Architecture reference
-│   └── security-scan.md           ← Security scans documentation
-├── examples/
-│   ├── caller-workflow.yml        ← Full example with custom instructions
-│   ├── caller-workflow-minimal.yml← Minimal example (auto-detect only)
-│   └── .agentic-review.yml       ← Per-repo config template
-└── README.md                      ← This file
+│   ├── ai-pass1.sh / ai-pass2.sh  # LLM passes
+│   ├── discover-iac.sh            # Terraform / multi-env discovery
+│   ├── gather-context.sh          # Diff + configs
+│   ├── run-checks.sh              # Execute Pass 1 commands
+│   ├── run-security.sh            # Security + hygiene
+│   ├── extra-scans.sh             # tflint, checkov, actionlint, …
+│   ├── run-docker.sh              # Docker + Trivy
+│   ├── run-sonar.sh               # SonarQube check runs
+│   ├── post-review.js             # PR comment + review + labels
+│   └── prompts/
+│       ├── pass1-system.txt       # Pass 1 system prompt
+│       └── pass2-system.txt       # Pass 2 system prompt
+└── examples/
+    ├── caller-workflow.yml
+    ├── caller-workflow-minimal.yml
+    ├── .agentic-review.yml
+    └── monorepo-demo/             # Node + Python + Terraform test fixture
 ```
-
----
-
-## LLM Compatibility
-
-Works with any OpenAI-compatible chat completions API:
-
-| Provider | Endpoint |
-|----------|----------|
-| **MGA (MyGenAssist)** | `https://chat.int.bayer.com/api/v2/chat/completions` |
-| **Azure OpenAI** | `https://{resource}.openai.azure.com/...` |
-| **OpenAI** | `https://api.openai.com/v1/chat/completions` |
-
-Model used: `gpt-4.1`
 
 ---
 
 ## FAQ
 
-**Q: Does this block merging?**
-No. It's informational only. It submits a review (approve/request changes) but you can dismiss it. Configure branch protection rules if you want it to block.
+**Does this block merging?**  
+No by default. It submits a review you can dismiss. Use branch protection if you want it required.
 
-**Q: How long does it take?**
-Typically 1–3 minutes depending on repo size and number of checks.
+**How long does it take?**  
+Usually 2–5 minutes depending on checks and parallel job load.
 
-**Q: What if the AI gets it wrong?**
-It only runs commands from your config files. If it picks something incorrect, the check fails and the AI notes it. Nothing is destructive.
+**Do I need custom instructions?**  
+No for most repos. Start without them; add when layout is unusual (large infra monorepos, private Docker, etc.).
 
-**Q: Do I need different workflows for different languages?**
-No. Same caller workflow works for Python, Node.js, Go, Rust, Java — anything.
+**What if Pass 1 picks the wrong command?**  
+The check fails visibly in the PR comment. Fix configs or add targeted custom instructions.
 
-**Q: What about private packages?**
-Pass `ARTIFACTORY_USERNAME` and `ARTIFACTORY_AUTH_TOKEN` secrets. They're automatically mapped to npm registry config and Docker build ARGs.
+**Public vs Bayer internal pipeline repo?**  
+- Internal: `bayer-int/agentic-review@<sha>`  
+- Public mirror: `pulumamidi-harsha/agentic-review@<sha>`
 
-**Q: Can I use this org-wide?**
-Yes. Set secrets at org level, then each repo only needs the caller workflow file.
-
-**Q: What if SonarQube isn't configured?**
-The step is completely skipped. No error, no warning.
-
-**Q: How do I skip for a specific PR?**
-Add the label `skip-ai-review` or `no-review` to the PR.
+**How do I pin a version?**  
+Set both `uses: org/agentic-review/.github/workflows/ai-review.yml@<sha>` and `pipeline_ref: <sha>`.
