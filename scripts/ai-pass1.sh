@@ -21,6 +21,7 @@ SYSTEM_PROMPT=$(cat "${SCRIPT_DIR}/prompts/pass1-system.txt")
 
 FILE_TREE=$(head -c 6000 "${AGENTIC_TMP}/file-tree.txt" 2>/dev/null || echo "")
 CONFIG_FILES=$(head -c 40000 "${AGENTIC_TMP}/config-files.txt" 2>/dev/null || echo "")
+DOC_FILES=$(head -c 30000 "${AGENTIC_TMP}/doc-files.txt" 2>/dev/null || echo "")
 IAC_INVENTORY=$(cat "${AGENTIC_TMP}/iac-context.txt" 2>/dev/null || echo "")
 IAC_CONFIG=$(head -c 50000 "${AGENTIC_TMP}/iac-config-files.txt" 2>/dev/null || echo "")
 CHANGED_FILES_LIST=$(head -n 80 "${AGENTIC_TMP}/pr-changed-files.txt" 2>/dev/null | sed 's/^/- /' || echo "- (none)")
@@ -77,6 +78,9 @@ ${FILE_TREE}
 
 ## Configuration Files
 ${CONFIG_FILES}
+
+## Documentation (README / CONTRIBUTING / DEVELOPMENT / INSTALL — authoritative for documented bootstrap & install steps)
+${DOC_FILES}
 ${IAC_SECTION}
 ${PAYLOAD_SECTION}
 

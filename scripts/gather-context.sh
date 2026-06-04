@@ -80,6 +80,29 @@ done < <(head -n 25 "${AGENTIC_TMP}/config-paths.txt" 2>/dev/null)
 echo "$CONFIG_CONTENT" > "${AGENTIC_TMP}/config-files.txt"
 agentic_log "  Config files loaded: ${CONFIG_COUNT}"
 
+# Documentation: README + install/dev docs often describe the real bootstrap
+# (e.g. "python -m venv .venv && source .venv/bin/activate && make install-dev").
+# The AI uses these to emit self-sufficient setup_commands.
+DOC_CONTENT=""
+DOC_COUNT=0
+while IFS= read -r f; do
+  [[ -z "$f" || ! -f "$f" ]] && continue
+  # Cap each doc at 20KB and overall at ~60KB worth (5 files max)
+  if [[ $(wc -c < "$f" 2>/dev/null | tr -d ' ') -lt 20000 ]]; then
+    DOC_CONTENT+=$'\n=== FILE: '"$f"$' ===\n'
+    DOC_CONTENT+="$(cat "$f" 2>/dev/null || echo "")"$'\n'
+    DOC_COUNT=$((DOC_COUNT + 1))
+  fi
+  [[ $DOC_COUNT -ge 5 ]] && break
+done < <(find . -maxdepth 3 \( \
+    -iname "README.md" -o -iname "README" -o -iname "README.rst" \
+    -o -iname "CONTRIBUTING.md" -o -iname "DEVELOPMENT.md" \
+    -o -iname "INSTALL.md" -o -iname "SETUP.md" -o -iname "HACKING.md" \
+  \) -not -path './.git/*' -not -path './node_modules/*' -not -path './vendor/*' \
+  2>/dev/null | sort)
+echo "$DOC_CONTENT" > "${AGENTIC_TMP}/doc-files.txt"
+agentic_log "  Doc files loaded: ${DOC_COUNT}"
+
 # IaC-specific config (deeper scan — backend.tf, tfvars, workflows, deployment docs)
 IAC_CONTENT=""
 IAC_COUNT=0

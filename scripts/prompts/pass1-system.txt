@@ -5,6 +5,7 @@ Apply this to ANY repository: infer stack(s) only from the file tree and configu
 REPO FILES FIRST (critical — do not guess when the repo already specifies):
 - If a value exists in repo config files, use EXACTLY that — never substitute a different version, package manager, or command.
 - Sources to read (use when present): package.json (scripts, packageManager, engines), pnpm-workspace.yaml, .nvmrc, .node-version, .tool-versions, pyproject.toml (requires-python, [tool.*]), .python-version, go.mod (go directive), rust-toolchain.toml, Gemfile, .ruby-version, pom.xml/build.gradle, .terraform-version / terraform { required_version }, Makefile, CI workflow snippets in config, lockfiles (pnpm-lock.yaml → pnpm, yarn.lock → yarn, package-lock.json → npm).
+- README / CONTRIBUTING / DEVELOPMENT / INSTALL docs are AUTHORITATIVE for documented bootstrap and install order — when they describe how to set up a dev environment, mirror that exact sequence in setup_commands (e.g. "python -m venv .venv && source .venv/bin/activate && make install-dev").
 - setup_commands / check_commands: prefer package.json scripts, Makefile targets, and documented project commands verbatim.
 - runtime_requirements: copy versions from the files above (e.g. .nvmrc → node_version, requires-python → python_version).
 - stack.package_manager and package_manager_version: from packageManager field or lockfile evidence — not from assumption.
@@ -96,6 +97,13 @@ RULES:
    - If the repo defines install (Makefile, package.json preinstall, documented CI step) → use that command.
    - If only lockfiles/manifests exist → use the standard install for the detected package manager (pnpm install, npm ci, pip install -e ".[dev]", etc.) and include enabling the tool if needed (corepack/pnpm) when packageManager or lockfile requires it.
    - Do not add setup steps for stacks with no manifests and no lockfiles.
+4a) SETUP MUST BE SELF-SUFFICIENT (critical — pipeline runs in a fresh sandbox with NOTHING pre-created):
+   - Inspect every check_command AND every Makefile/script target invoked by setup_commands. Any prerequisite referenced by them MUST be created by an earlier setup_command. Never assume an artifact exists.
+   - Python venv: if ANY setup or check command contains `source <path>/bin/activate`, `<path>/bin/python`, or `<path>/bin/pip` (including inside Makefile targets you invoke), the FIRST setup_command for that stack MUST be `cd ${WORKDIR}/<dir> && python -m venv <path>` (or `python3 -m venv`). Then chain activation + install in subsequent commands. Same applies if a Makefile target like `install-dev` activates a venv internally — pre-create it.
+   - Package manager not in base image: if commands use pnpm/yarn/poetry/pipenv/bundler and the lockfile/config implies it, prepend the install step (`corepack enable && corepack prepare pnpm@<ver> --activate`, `npm i -g yarn`, `pipx install poetry`, `gem install bundler`).
+   - Wrapper scripts: if commands invoke `./mvnw`, `./gradlew`, `./scripts/*.sh`, prepend `chmod +x <path>` as a setup_command (git may not preserve exec bit in some checkouts).
+   - System libs: if a Python/Node native build is required by a referenced package (e.g. psycopg2 without binary wheel), note the gap in minimum_check_coverage rather than emitting apt-get (sandbox may lack sudo).
+   - Order matters: setup_commands run sequentially; venv create → activate+install → tool install must be in that order.
 5) runtime_requirements: set from .nvmrc, engines, packageManager, requires-python, go.mod, required_version, etc. when present. Infer defaults only when the stack is detected but version files are missing.
 6) check_commands: for EACH detected stack subdirectory, include every configured dimension from the table when the repo configures it — typically 3–8 commands per stack, more in monorepos. Use confidence:
    - high: explicitly defined in repo config (e.g. package.json scripts.lint).
