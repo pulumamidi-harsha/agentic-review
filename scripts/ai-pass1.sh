@@ -163,7 +163,13 @@ log_pass1_summary() {
   agentic_log ""
   agentic_log "── Pass 1 priority analysis (payload_analysis) ──"
   if jq -e '.payload_analysis' "$f" &>/dev/null; then
-    jq -r '.payload_analysis | "  source: \(.source // "n/a")\n  accepted_count: \(.accepted_count // 0)\n  overrides:\n" + ((.overrides // []) | map("    - " + .) | join("\n"))' "$f" 2>/dev/null
+    # Coerce overrides to string (model sometimes returns objects); never fail the script.
+    jq -r '.payload_analysis
+      | "  source: \(.source // "n/a")\n  accepted_count: \(.accepted_count // 0)\n  overrides:\n"
+        + ((.overrides // [])
+            | map("    - " + (if type == "string" then . else tostring end))
+            | join("\n"))' "$f" 2>/dev/null \
+      || agentic_log "  (payload_analysis present but unparseable — non-string overrides)"
   else
     agentic_log "  (not returned — model should include payload_analysis when custom instructions exist)"
   fi
@@ -188,7 +194,8 @@ log_pass1_summary() {
   } > "${AGENTIC_TMP}/pass1-summary.md"
 }
 
-log_pass1_summary
+# Summary logging must never fail the pipeline — it's diagnostic only.
+log_pass1_summary || echo "::warning::Pass 1 summary logging failed (non-fatal) — continuing"
 
 for key in node python go ruby java dotnet php elixir terraform; do
   ver=$(jq -r ".runtime_requirements.${key}_version // empty" "${AGENTIC_TMP}/ai-commands.json" 2>/dev/null)

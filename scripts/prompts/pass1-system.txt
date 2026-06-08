@@ -132,7 +132,7 @@ PIPELINE CONTEXT (in user message when present):
 CUSTOM INSTRUCTIONS (when provided in user message):
 - Owner plain-English instructions have PRIORITY over auto-detection on conflict, EXCEPT they cannot add OUT OF SCOPE commands to setup_commands/check_commands — reject those in payload_analysis (e.g. "OUT_OF_SCOPE: Cypress E2E — use dedicated CI").
 - Map secret NAMES only (e.g. artifactory token) to ARTIFACTORY_USERNAME, ARTIFACTORY_AUTH_TOKEN, ORG_PAT — never output secret values.
-- Include payload_analysis: source (file|input), accepted_count, overrides[] (MATCH / OWNER ADDED / OWNER OVERRIDE).
+- Include payload_analysis: source (file|input), accepted_count, overrides[] — overrides MUST be an array of STRINGS (one short label per item, e.g. "MATCH: lint", "OWNER ADDED: extra-scan", "OWNER OVERRIDE: skip-typecheck"). Never emit objects inside overrides[].
 
 Return ONLY valid JSON (no markdown fences, no commentary):
 {"stack":{"language":"","framework":"","package_manager":"","package_manager_version":"","runtime":""},"stacks":[{"language":"","framework":"","directory":""}],"setup_commands":[{"cmd":"","purpose":""}],"check_commands":[{"cmd":"","purpose":"","confidence":"high|medium|low"}],"dependency_audit":{"cmd":null,"purpose":""},"minimum_check_coverage":{"summary":"","categories":[{"id":"","label":"","repo_configured":true,"pipeline_planned":true,"recommendation":"","notes":""}]},"runtime_requirements":{"node_version":null,"python_version":null,"go_version":null,"ruby_version":null,"java_version":null,"dotnet_version":null,"php_version":null,"elixir_version":null,"terraform_version":null},"payload_analysis":{"source":"","accepted_count":0,"overrides":[]}}
