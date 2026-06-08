@@ -54,11 +54,15 @@ IDENTIFY WHERE TO RUN (use IaC inventory in user message when provided — it is
 8) NEVER in check_commands: terraform apply, terraform plan against live backend, terragrunt run-all apply, or any command needing AWS/cloud credentials for real state.
 
 TERRAFORM CHECK COMMANDS (emit for each PR-affected deploy root):
-- Format: `terraform fmt -check -recursive` at repo root OR per changed stack (match repo CI).
-- Validate per deploy root:
-  `cd ${WORKDIR}/<deploy-root> && terraform init -backend=false && terraform validate` (+ `-var-file=terraform.tfvars` when tfvars exists).
-- tflint: when .tflint.hcl exists — `tflint --init --config=${WORKDIR}/.tflint.hcl` then `--chdir=<stack>/infrastructure` and each `<stack>/modules/*/` (match repo CI pattern). Mark pipeline_planned notes if extra-scans job covers tflint.
-- checkov: when .checkov.yml exists — `checkov -d <stack>` per affected platform stack (notes: covered by security scans job when applicable).
+- SETUP vs CHECK SPLIT (critical — `terraform validate` and `tflint` BOTH fail without `terraform init` first; same for `tflint` without `tflint --init`; emitting `validate` or `tflint` alone in check_commands without the matching init in setup_commands is a hard error that breaks every Terraform PR):
+  - setup_commands per affected deploy root: `cd ${WORKDIR}/<deploy-root> && terraform init -backend=false` (one entry per root — child modules are resolved by init).
+  - setup_commands for tflint when `.tflint.hcl` exists: `cd ${WORKDIR}/<dir> && tflint --init --config=<absolute-path-to-.tflint.hcl>` (one per directory that runs tflint; required so plugins are downloaded before the check runs).
+  - check_commands then runs the actual checks: `terraform validate` (with `-var-file=terraform.tfvars` when present), `tflint --config=<path>`, `checkov -d <stack>`, `terraform fmt -check -recursive`.
+- Format: `terraform fmt -check -recursive` at repo root OR per changed stack (match repo CI). No init needed; goes directly in check_commands.
+- Validate per deploy root (check_commands): `cd ${WORKDIR}/<deploy-root> && terraform validate` (+ `-var-file=terraform.tfvars` when tfvars exists). The matching `terraform init -backend=false` MUST already exist in setup_commands for the same directory.
+- tflint: when .tflint.hcl exists — `tflint --init` MUST be in setup_commands; `tflint --config=<path>` (per directory) goes in check_commands. Match repo CI pattern for which dirs are linted. Mark pipeline_planned notes if extra-scans job covers tflint.
+- checkov: when .checkov.yml exists — `checkov -d <stack>` per affected platform stack in check_commands (no setup needed; notes: covered by security scans job when applicable).
+- NEVER chain `init && validate` in a single check_command entry — keep init in setup_commands so a setup failure short-circuits cleanly and validate runs/reports as its own step.
 
 OTHER IaC:
 - Helm: helm lint, helm template when Chart.yaml exists.
@@ -110,6 +114,7 @@ RULES:
    - Python venv: if ANY setup or check command contains `source <path>/bin/activate`, `<path>/bin/python`, or `<path>/bin/pip` (including inside Makefile targets you invoke), the FIRST setup_command for that stack MUST be `cd ${WORKDIR}/<dir> && python -m venv <path>` (or `python3 -m venv`). Then chain activation + install in subsequent commands. Same applies if a Makefile target like `install-dev` activates a venv internally — pre-create it.
    - Package manager not in base image: if commands use pnpm/yarn/poetry/pipenv/bundler and the lockfile/config implies it, prepend the install step (`corepack enable && corepack prepare pnpm@<ver> --activate`, `npm i -g yarn`, `pipx install poetry`, `gem install bundler`).
    - Wrapper scripts: if commands invoke `./mvnw`, `./gradlew`, `./scripts/*.sh`, prepend `chmod +x <path>` as a setup_command (git may not preserve exec bit in some checkouts).
+   - Terraform: if ANY check_command runs `terraform validate` (or `tflint --config=...`), setup_commands MUST first run `terraform init -backend=false` in the same directory (and `tflint --init` once per tflint-config dir). validate/tflint fail with "Module not installed" / "no plugin loaded" without these — never emit validate-without-init.
    - System libs: if a Python/Node native build is required by a referenced package (e.g. psycopg2 without binary wheel), note the gap in minimum_check_coverage rather than emitting apt-get (sandbox may lack sudo).
    - Order matters: setup_commands run sequentially; venv create → activate+install → tool install must be in that order.
 5) runtime_requirements: set from .nvmrc, engines, packageManager, requires-python, go.mod, required_version, etc. when present. Infer defaults only when the stack is detected but version files are missing.
