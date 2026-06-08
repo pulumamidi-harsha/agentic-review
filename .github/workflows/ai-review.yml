@@ -221,20 +221,35 @@ jobs:
       - name: Install package manager
         if: needs.prepare.outputs.node_version != ''
         run: |
+          set +e
           PKG_MGR=$(jq -r '.stack.package_manager // empty' "${AGENTIC_TMP}/ai-commands.json")
           PKG_MGR_VER=$(jq -r '.stack.package_manager_version // empty' "${AGENTIC_TMP}/ai-commands.json")
           PKG_MGR_FIELD=$(jq -r '.packageManager // empty' package.json 2>/dev/null)
+          set -e
           case "$PKG_MGR" in
             pnpm)
               VER="9"
-              [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == pnpm@* ]] && VER="${PKG_MGR_FIELD#pnpm@}" && VER="${VER%%+*}"
-              [[ -n "$PKG_MGR_VER" && "$PKG_MGR_VER" != "null" ]] && VER="$PKG_MGR_VER"
+              if [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == pnpm@* ]]; then
+                VER="${PKG_MGR_FIELD#pnpm@}"
+                VER="${VER%%+*}"
+              fi
+              if [[ -n "$PKG_MGR_VER" && "$PKG_MGR_VER" != "null" ]]; then
+                VER="$PKG_MGR_VER"
+              fi
+              echo "Installing pnpm@${VER}"
               npm install -g "pnpm@${VER}"
               ;;
             yarn)
               VER="4"
-              [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == yarn@* ]] && VER="${PKG_MGR_FIELD#yarn@}" && VER="${VER%%+*}"
+              if [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == yarn@* ]]; then
+                VER="${PKG_MGR_FIELD#yarn@}"
+                VER="${VER%%+*}"
+              fi
+              echo "Activating yarn@${VER} via corepack"
               corepack enable && corepack prepare "yarn@${VER}" --activate
+              ;;
+            *)
+              echo "No extra package manager install needed (PKG_MGR='${PKG_MGR:-none}')"
               ;;
           esac
 

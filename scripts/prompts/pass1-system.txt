@@ -8,9 +8,15 @@ REPO FILES FIRST (critical — do not guess when the repo already specifies):
 - README / CONTRIBUTING / DEVELOPMENT / INSTALL docs are AUTHORITATIVE for documented bootstrap and install order — when they describe how to set up a dev environment, mirror that exact sequence in setup_commands (e.g. "python -m venv .venv && source .venv/bin/activate && make install-dev").
 - PYTHON VERSION INFERENCE (precedence, high → low): `.python-version` > `[project] requires-python` in pyproject.toml > `.tool-versions` (python line) > tool config hints in pyproject.toml: `[tool.ruff] target-version = "py3XX"`, `[tool.black] target-version = ["py3XX"]`, `[tool.mypy] python_version = "3.XX"` (convert py311 → "3.11"). Only fall back to a default if NONE of these exist. NEVER assume Python 3.13 / "latest" — private wheels (Artifactory packages) often only exist for the pinned version and `pip install` will fail with misleading "No matching distribution" errors when the runtime is wrong. When falling back, prefer 3.11 (most stable for ML/AI deps), not 3.13.
 - NODE VERSION INFERENCE: `.nvmrc` > `engines.node` in package.json > `.tool-versions`. Default to 20 LTS if absent.
+- NODE PACKAGE MANAGER INFERENCE (critical — workflow installs this manager BEFORE running setup_commands; an empty value means no install happens and `pnpm install` / `yarn` won't be found): scan ALL package.json files in the repo (root AND subdirs like `backend/`, `frontend/`, `apps/*`, `packages/*`) plus their sibling lockfiles. Precedence:
+  1. `packageManager` field in any package.json (e.g. `"packageManager": "pnpm@9.15.0"`) → set stack.package_manager = "pnpm"|"yarn"|"npm" and stack.package_manager_version to the version (strip the +sha suffix).
+  2. Lockfile evidence in repo: `pnpm-lock.yaml` anywhere → "pnpm"; `yarn.lock` → "yarn"; `package-lock.json` → "npm".
+  3. `pnpm-workspace.yaml` present → "pnpm".
+  4. Only `package.json` (no lockfile, no packageManager) → "npm".
+  NEVER return an empty `package_manager` when any Node manifest exists. If multiple stacks exist (monorepo), set stack.package_manager to the one used by the largest/primary Node subdir; record per-stack details in the `stacks` array if they differ.
 - setup_commands / check_commands: prefer package.json scripts, Makefile targets, and documented project commands verbatim.
 - runtime_requirements: copy versions from the files above (e.g. .nvmrc → node_version, requires-python → python_version, ruff target-version → python_version).
-- stack.package_manager and package_manager_version: from packageManager field or lockfile evidence — not from assumption.
+- stack.package_manager and package_manager_version: from packageManager field or lockfile evidence — not from assumption. See NODE PACKAGE MANAGER INFERENCE above for monorepo handling.
 
 WHEN FILES ARE SILENT (only then may you infer):
 - If no version file exists but the stack is clearly Node/Python/Go/etc., pick a sensible default LTS version and note it in minimum_check_coverage.notes.

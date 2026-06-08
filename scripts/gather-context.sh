@@ -80,6 +80,21 @@ done < <(head -n 25 "${AGENTIC_TMP}/config-paths.txt" 2>/dev/null)
 echo "$CONFIG_CONTENT" > "${AGENTIC_TMP}/config-files.txt"
 agentic_log "  Config files loaded: ${CONFIG_COUNT}"
 
+# Lockfile / package-manager inventory: surface PATHS only (lockfiles are huge).
+# Pass 1 uses this to infer stack.package_manager reliably in monorepos
+# (e.g. backend/pnpm-lock.yaml even when root has no package.json).
+{
+  echo "# Node package manager evidence (paths only — file contents not included due to size)"
+  find . -maxdepth 5 \( \
+      -name 'package.json' -o -name 'pnpm-lock.yaml' -o -name 'yarn.lock' \
+      -o -name 'package-lock.json' -o -name 'pnpm-workspace.yaml' \
+      -o -name '.nvmrc' -o -name '.node-version' -o -name '.tool-versions' \
+    \) -not -path './.git/*' -not -path './node_modules/*' -not -path './vendor/*' \
+    2>/dev/null | sort -u | head -n 60
+} > "${AGENTIC_TMP}/pkgmgr-inventory.txt"
+PKGMGR_COUNT=$(grep -cv '^#' "${AGENTIC_TMP}/pkgmgr-inventory.txt" 2>/dev/null || echo 0)
+agentic_log "  Package-manager evidence paths: ${PKGMGR_COUNT}"
+
 # Documentation: README + install/dev docs often describe the real bootstrap
 # (e.g. "python -m venv .venv && source .venv/bin/activate && make install-dev").
 # The AI uses these to emit self-sufficient setup_commands.
