@@ -1,14 +1,44 @@
 #!/usr/bin/env bash
 # Call OpenAI-compatible chat API with retries. Writes raw message to $1 (output file).
+#
+# Usage:
+#   call-llm.sh <output_file> <system_prompt_or_@file> <user_msg_or_@file> [temperature] [max_tokens]
+#
+# To avoid ARG_MAX (~128KB on Linux) when prompts get large, prefer file form:
+#   call-llm.sh out.txt @/tmp/sys.txt @/tmp/user.txt 0 6144
 set -euo pipefail
 
 OUTPUT_FILE="${1:?output file required}"
-SYSTEM_PROMPT="${2:?system prompt required}"
-USER_MSG="${3:?user message required}"
+SYSTEM_PROMPT_ARG="${2:?system prompt required}"
+USER_MSG_ARG="${3:?user message required}"
 TEMPERATURE="${4:-0.1}"
 MAX_TOKENS="${5:-4096}"
 
 source "$(dirname "$0")/common.sh"
+
+# Resolve @file references to actual content (read from file to avoid ARG_MAX).
+resolve_input() {
+  local val="$1"
+  if [[ "$val" == @* ]]; then
+    local path="${val:1}"
+    if [[ ! -f "$path" ]]; then
+      echo "::error::call-llm.sh: file not found: $path" >&2
+      exit 1
+    fi
+    cat "$path"
+  else
+    printf '%s' "$val"
+  fi
+}
+
+# Stage to temp files so we never re-expand huge strings on the command line.
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
+SYSTEM_FILE="$TMP_DIR/system.txt"
+USER_FILE="$TMP_DIR/user.txt"
+BODY_FILE="$TMP_DIR/body.json"
+resolve_input "$SYSTEM_PROMPT_ARG" > "$SYSTEM_FILE"
+resolve_input "$USER_MSG_ARG"     > "$USER_FILE"
 
 if [[ -z "${AI_API_ENDPOINT:-}" || -z "${AI_API_KEY:-}" ]]; then
   echo "::warning::AI_API_ENDPOINT or AI_API_KEY not configured"
@@ -51,9 +81,10 @@ CURL_OPTS=(
   -H "Authorization: Bearer ${AI_API_KEY}"
 )
 
-REQUEST_BODY=$(jq -n \
-  --arg system "$SYSTEM_PROMPT" \
-  --arg user "$USER_MSG" \
+# Build request body via files (jq --rawfile) — avoids loading the prompt into a shell var.
+jq -n \
+  --rawfile system "$SYSTEM_FILE" \
+  --rawfile user "$USER_FILE" \
   --arg model "$AI_MODEL" \
   --argjson temp "$TEMPERATURE" \
   --argjson max_tokens "$MAX_TOKENS" \
@@ -65,10 +96,14 @@ REQUEST_BODY=$(jq -n \
     ],
     temperature: $temp,
     max_tokens: $max_tokens
-  }')
+  }' > "$BODY_FILE"
+
+BODY_BYTES=$(wc -c < "$BODY_FILE" | tr -d ' ')
+echo "::notice::LLM request size: ${BODY_BYTES} bytes"
 
 for attempt in 1 2 3; do
-  RESPONSE=$(curl "${CURL_OPTS[@]}" -d "$REQUEST_BODY" 2>/tmp/curl-error.txt) || true
+  # Use -d @file to stream body from disk; never expands on the command line.
+  RESPONSE=$(curl "${CURL_OPTS[@]}" -d "@${BODY_FILE}" 2>/tmp/curl-error.txt) || true
 
   HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
   BODY=$(echo "$RESPONSE" | sed '$d')

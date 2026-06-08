@@ -88,7 +88,11 @@ Analyze this repository (monorepo-aware, IaC-deep when Terraform/inventory prese
 For IaC repos: validate pr_affected.deploy_roots from inventory; use -var-file=terraform.tfvars when tfvars exists; when shared modules/infrastructure change, validate all env deploy roots in that stack.
 Every cmd MUST start with \"cd \${WORKDIR} && \" or \"cd \${WORKDIR}/<subdir> && \"."
 
-if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-pass1-raw.txt" "$SYSTEM_PROMPT" "$USER_MSG" 0 6144; then
+# Stage prompts to disk to avoid ARG_MAX when context grows large (config + docs + IaC).
+printf '%s' "$SYSTEM_PROMPT" > "${AGENTIC_TMP}/pass1-system.txt"
+printf '%s' "$USER_MSG"      > "${AGENTIC_TMP}/pass1-user.txt"
+
+if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-pass1-raw.txt" "@${AGENTIC_TMP}/pass1-system.txt" "@${AGENTIC_TMP}/pass1-user.txt" 0 6144; then
   AI_OUTPUT=$(cat "${AGENTIC_TMP}/ai-pass1-raw.txt")
   CLEANED=$(echo "$AI_OUTPUT" | sed 's/^```json//;s/^```//;s/```$//')
   if echo "$CLEANED" | jq '.' > "${AGENTIC_TMP}/ai-commands.json" 2>/dev/null; then

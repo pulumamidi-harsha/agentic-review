@@ -112,7 +112,11 @@ export CHECKS_PASSED="${CHECKS_PASSED:-}"
 export CHECKS_FAILED="${CHECKS_FAILED:-}"
 export CHECKS_EXIT="${CHECKS_EXIT:-}"
 
-if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-review.txt" "$SYSTEM_PROMPT" "$USER_MSG" 0.1 6144; then
+# Stage prompts to disk to avoid ARG_MAX when context grows large (diff + check results + sonar).
+printf '%s' "$SYSTEM_PROMPT" > "${AGENTIC_TMP}/pass2-system.txt"
+printf '%s' "$USER_MSG"      > "${AGENTIC_TMP}/pass2-user.txt"
+
+if bash "${SCRIPT_DIR}/call-llm.sh" "${AGENTIC_TMP}/ai-review.txt" "@${AGENTIC_TMP}/pass2-system.txt" "@${AGENTIC_TMP}/pass2-user.txt" 0.1 6144; then
   agentic_log "  AI review generated successfully"
   # Validate JSON; fallback to comment verdict on parse failure
   if ! jq -e '.verdict' "${AGENTIC_TMP}/ai-review.txt" &>/dev/null; then
