@@ -71,6 +71,31 @@ while IFS= read -r cmd; do
   # Substitute ${WORKDIR} with actual path; also handle commands without it
   cmd="${cmd//\$\{WORKDIR\}/$WORKDIR}"
   cmd="${cmd//\$WORKDIR/$WORKDIR}"
+
+  # Auto-bootstrap missing Python package managers (uv, poetry, pipenv, hatch, rye).
+  # The AI prompt requires emitting an install step (e.g. `pipx install uv`) before
+  # the manager is used, but if it forgets, this safety net keeps the pipeline moving
+  # instead of failing with "command not found".
+  bootstrap_tool() {
+    local tool="$1" install_via_pipx="$2"
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "  AUTO-INSTALL: '$tool' is missing — bootstrapping (AI prompt should have included this as a setup_command)"
+      if command -v pipx >/dev/null 2>&1; then
+        pipx install "$install_via_pipx" >/dev/null 2>&1 && export PATH="$HOME/.local/bin:$PATH"
+      else
+        python3 -m pip install --user --quiet "$install_via_pipx" 2>/dev/null && export PATH="$HOME/.local/bin:$PATH"
+      fi
+      command -v "$tool" >/dev/null 2>&1 || echo "  WARN: bootstrap of '$tool' did not succeed; setup command will still attempt to run"
+    fi
+  }
+  case "$cmd" in
+    *"uv "*|*"uv sync"*|*"uv pip"*|*"uv run"*) bootstrap_tool uv uv ;;
+    *"poetry "*) bootstrap_tool poetry poetry ;;
+    *"pipenv "*) bootstrap_tool pipenv pipenv ;;
+    *"hatch "*) bootstrap_tool hatch hatch ;;
+    *"rye "*) bootstrap_tool rye rye ;;
+  esac
+
   echo ""
   echo "  > $cmd"
   # Run in subshell so 'cd' commands don't affect subsequent steps
