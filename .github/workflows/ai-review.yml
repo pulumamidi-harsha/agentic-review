@@ -265,14 +265,24 @@ jobs:
         if: needs.prepare.outputs.python_version != ''
         with:
           python-version: ${{ needs.prepare.outputs.python_version }}
-          cache: pip
+          # cache: pip intentionally omitted — dependency install happens dynamically
+          # via setup_commands (we don't know the requirements file path at this point),
+          # so setup-python's post-job cleanup would log a misleading
+          # "Error: Cache folder path ... doesn't exist on disk" on every run.
 
       - name: Setup Go
         uses: actions/setup-go@v5
-        if: needs.prepare.outputs.go_version != ''
+        if: needs.prepare.outputs.go_version != '' && hashFiles('go.sum') != ''
         with:
           go-version: ${{ needs.prepare.outputs.go_version }}
           cache-dependency-path: go.sum
+
+      - name: Setup Go (no cache)
+        uses: actions/setup-go@v5
+        if: needs.prepare.outputs.go_version != '' && hashFiles('go.sum') == ''
+        with:
+          go-version: ${{ needs.prepare.outputs.go_version }}
+          cache: false
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
