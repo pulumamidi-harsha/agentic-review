@@ -25,6 +25,7 @@ OVERALL_EXIT=0
 PASSED_COUNT=0
 FAILED_COUNT=0
 SETUP_FAILED=false
+SETUP_FALLBACK_USED=false
 
 # WORKDIR is the repo root — AI commands use ${WORKDIR} prefix for all paths
 WORKDIR="$PWD"
@@ -76,8 +77,41 @@ while IFS= read -r cmd; do
   if (eval "$cmd") 2>&1; then
     echo "  OK: Setup command succeeded"
   else
-    echo "  FAIL: Setup command failed (exit $?)"
-    SETUP_FAILED=true
+    rc=$?
+    # Stale-lockfile auto-recovery: a very common repo-hygiene issue
+    # (package.json updated but lockfile not regenerated) should not block
+    # an AI review. Retry the strict install with a regenerating install
+    # so the rest of the pipeline can proceed. We log the fallback loudly
+    # so the PR comment can flag "lockfile out of sync" for the author.
+    fallback=""
+    case "$cmd" in
+      *"npm ci"*)
+        fallback="${cmd/npm ci/npm install --no-audit --no-fund --prefer-offline}"
+        ;;
+      *"pnpm install --frozen-lockfile"*)
+        fallback="${cmd/pnpm install --frozen-lockfile/pnpm install --no-frozen-lockfile}"
+        ;;
+      *"yarn install --frozen-lockfile"*)
+        fallback="${cmd/yarn install --frozen-lockfile/yarn install}"
+        ;;
+      *"yarn install --immutable"*)
+        fallback="${cmd/yarn install --immutable/yarn install}"
+        ;;
+    esac
+    if [[ -n "$fallback" ]]; then
+      echo "  WARN: strict install failed (exit $rc) — lockfile likely out of sync. Falling back to regenerating install:"
+      echo "  > $fallback"
+      if (eval "$fallback") 2>&1; then
+        echo "  OK: Setup command succeeded via fallback (lockfile is stale — please run the same install locally and commit the regenerated lockfile)"
+        SETUP_FALLBACK_USED=true
+      else
+        echo "  FAIL: Fallback install also failed (exit $?)"
+        SETUP_FAILED=true
+      fi
+    else
+      echo "  FAIL: Setup command failed (exit $rc)"
+      SETUP_FAILED=true
+    fi
   fi
   # Always return to repo root after each setup command
   cd "$REPO_ROOT"
@@ -86,6 +120,10 @@ echo ""
 
 CHECK_COUNT=$(jq '.check_commands | length' ${AGENTIC_TMP}/ai-commands.json)
 echo "--- CHECKS: Running ${CHECK_COUNT} commands ---"
+
+if [[ "$SETUP_FALLBACK_USED" == "true" && "$SETUP_FAILED" != "true" ]]; then
+  RESULTS+="> :warning: **Lockfile out of sync** — strict install (\`npm ci\` / \`pnpm install --frozen-lockfile\` / \`yarn install --frozen-lockfile\`) failed because the lockfile does not match \`package.json\`. The pipeline auto-recovered with a regenerating install so checks could run. **Please run the install locally and commit the regenerated lockfile** so CI is reproducible."$'\n\n'
+fi
 
 if [[ "$SETUP_FAILED" == "true" ]]; then
   echo "  SKIP ALL CHECKS: dependency setup failed — remaining failures would be environmental, not code"
