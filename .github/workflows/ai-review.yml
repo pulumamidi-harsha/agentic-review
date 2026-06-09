@@ -333,6 +333,10 @@ jobs:
           ARTIFACTORY_USER_NAME: ${{ secrets.ARTIFACTORY_USERNAME }}
           ARTIFACTORY_USER_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
           PIP_NO_INPUT: "1"
+          # Agentic self-healing: ai-fix-setup.sh consults the model when a
+          # setup_command fails. Needs the same LLM credentials as Pass 1/2.
+          AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
         run: bash "$PIPELINE_DIR/scripts/run-checks.sh"
 
       - name: Dependency audit

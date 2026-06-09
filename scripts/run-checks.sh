@@ -26,6 +26,9 @@ PASSED_COUNT=0
 FAILED_COUNT=0
 SETUP_FAILED=false
 SETUP_FALLBACK_USED=false
+SETUP_AGENTIC_REPAIRS=()  # human-readable summaries of agentic repairs (for PR comment)
+AGENTIC_REPAIR_BUDGET=4   # max total LLM repair calls per run (bounds cost)
+AGENTIC_REPAIRS_USED=0
 
 # WORKDIR is the repo root — AI commands use ${WORKDIR} prefix for all paths
 WORKDIR="$PWD"
@@ -98,16 +101,15 @@ while IFS= read -r cmd; do
 
   echo ""
   echo "  > $cmd"
-  # Run in subshell so 'cd' commands don't affect subsequent steps
-  if (eval "$cmd") 2>&1; then
+  # Capture combined stdout+stderr so we can stream live AND feed it to the
+  # agentic repair LLM if the command fails. tee writes to terminal in real time.
+  CMD_LOG="$(mktemp -t agentic-setup-XXXXXX.log)"
+  if (eval "$cmd") > >(tee "$CMD_LOG") 2>&1; then
     echo "  OK: Setup command succeeded"
+    rm -f "$CMD_LOG"
   else
     rc=$?
-    # Stale-lockfile auto-recovery: a very common repo-hygiene issue
-    # (package.json updated but lockfile not regenerated) should not block
-    # an AI review. Retry the strict install with a regenerating install
-    # so the rest of the pipeline can proceed. We log the fallback loudly
-    # so the PR comment can flag "lockfile out of sync" for the author.
+    # 1) Cheap static fallback: stale-lockfile patterns we know are repo-hygiene noise.
     fallback=""
     case "$cmd" in
       *"npm ci"*)
@@ -126,17 +128,78 @@ while IFS= read -r cmd; do
     if [[ -n "$fallback" ]]; then
       echo "  WARN: strict install failed (exit $rc) — lockfile likely out of sync. Falling back to regenerating install:"
       echo "  > $fallback"
-      if (eval "$fallback") 2>&1; then
+      if (eval "$fallback") 2>&1 | tee "$CMD_LOG"; then
         echo "  OK: Setup command succeeded via fallback (lockfile is stale — please run the same install locally and commit the regenerated lockfile)"
         SETUP_FALLBACK_USED=true
+        rm -f "$CMD_LOG"
+        cd "$REPO_ROOT"
+        continue
       else
-        echo "  FAIL: Fallback install also failed (exit $?)"
-        SETUP_FAILED=true
+        echo "  WARN: Static fallback also failed (exit $?); escalating to agentic repair…"
+      fi
+    fi
+
+    # 2) Agentic repair: ask the LLM to diagnose + emit a minimal repair plan,
+    #    then re-run repair_commands and (optionally) retry_cmd. Bounded to
+    #    AGENTIC_REPAIR_BUDGET total calls per pipeline run to cap cost.
+    repaired=false
+    if (( AGENTIC_REPAIRS_USED < AGENTIC_REPAIR_BUDGET )); then
+      AGENTIC_REPAIRS_USED=$((AGENTIC_REPAIRS_USED + 1))
+      echo ""
+      echo "  AGENTIC REPAIR (attempt ${AGENTIC_REPAIRS_USED}/${AGENTIC_REPAIR_BUDGET}): asking AI to diagnose failure…"
+      REPAIR_JSON="$(mktemp -t agentic-repair-XXXXXX.json)"
+      if bash "$PIPELINE_DIR/scripts/ai-fix-setup.sh" "$cmd" "$CMD_LOG" "$REPAIR_JSON"; then
+        DIAG=$(jq -r '.diagnosis // ""' "$REPAIR_JSON")
+        REASON=$(jq -r '.reason // ""' "$REPAIR_JSON")
+        RETRY_CMD=$(jq -r '.retry_cmd // ""' "$REPAIR_JSON")
+        REPAIR_CMDS=$(jq -r '.repair_commands[]? // empty' "$REPAIR_JSON")
+        echo "  AGENTIC DIAGNOSIS: $DIAG"
+        echo "  AGENTIC PLAN: $REASON"
+        repair_ok=true
+        while IFS= read -r rcmd; do
+          [[ -z "$rcmd" ]] && continue
+          rcmd="${rcmd//\$\{WORKDIR\}/$WORKDIR}"
+          rcmd="${rcmd//\$WORKDIR/$WORKDIR}"
+          echo "  REPAIR > $rcmd"
+          if ! (eval "$rcmd") 2>&1; then
+            echo "  REPAIR FAIL: repair command exited non-zero"
+            repair_ok=false
+            break
+          fi
+          cd "$REPO_ROOT"
+        done <<< "$REPAIR_CMDS"
+
+        if [[ "$repair_ok" == "true" ]]; then
+          # If model proposed a corrected retry command, run that; otherwise re-run the original.
+          final_cmd="${RETRY_CMD:-$cmd}"
+          final_cmd="${final_cmd//\$\{WORKDIR\}/$WORKDIR}"
+          final_cmd="${final_cmd//\$WORKDIR/$WORKDIR}"
+          if [[ -n "$RETRY_CMD" && "$RETRY_CMD" != "$cmd" ]]; then
+            echo "  RETRY (with AI-corrected command) > $final_cmd"
+          else
+            echo "  RETRY > $final_cmd"
+          fi
+          if (eval "$final_cmd") 2>&1 | tee "$CMD_LOG"; then
+            echo "  OK: Setup command succeeded after agentic repair"
+            SETUP_AGENTIC_REPAIRS+=("\`${cmd}\` — ${REASON:-$DIAG}")
+            repaired=true
+          else
+            echo "  FAIL: command still failed after agentic repair (exit $?)"
+          fi
+        fi
+        rm -f "$REPAIR_JSON"
+      else
+        echo "  AGENTIC REPAIR: model gave up or repair call failed (see warnings above)"
       fi
     else
-      echo "  FAIL: Setup command failed (exit $rc)"
+      echo "  AGENTIC REPAIR: budget exhausted (${AGENTIC_REPAIR_BUDGET} repairs already used this run)"
+    fi
+
+    if [[ "$repaired" != "true" ]]; then
+      echo "  FAIL: Setup command failed (exit $rc) and could not be auto-repaired"
       SETUP_FAILED=true
     fi
+    rm -f "$CMD_LOG"
   fi
   # Always return to repo root after each setup command
   cd "$REPO_ROOT"
@@ -148,6 +211,14 @@ echo "--- CHECKS: Running ${CHECK_COUNT} commands ---"
 
 if [[ "$SETUP_FALLBACK_USED" == "true" && "$SETUP_FAILED" != "true" ]]; then
   RESULTS+="> :warning: **Lockfile out of sync** — strict install (\`npm ci\` / \`pnpm install --frozen-lockfile\` / \`yarn install --frozen-lockfile\`) failed because the lockfile does not match \`package.json\`. The pipeline auto-recovered with a regenerating install so checks could run. **Please run the install locally and commit the regenerated lockfile** so CI is reproducible."$'\n\n'
+fi
+
+if (( ${#SETUP_AGENTIC_REPAIRS[@]} > 0 )); then
+  RESULTS+="> :robot: **Agentic self-healing applied** (${#SETUP_AGENTIC_REPAIRS[@]} repair$([ ${#SETUP_AGENTIC_REPAIRS[@]} -gt 1 ] && echo s)) — the pipeline encountered setup failures and asked the review model to diagnose & repair them so checks could run. These may indicate gaps in the repo's documented setup; consider committing them as proper setup steps:"$'\n'
+  for repair in "${SETUP_AGENTIC_REPAIRS[@]}"; do
+    RESULTS+="> - ${repair}"$'\n'
+  done
+  RESULTS+=$'\n'
 fi
 
 if [[ "$SETUP_FAILED" == "true" ]]; then
