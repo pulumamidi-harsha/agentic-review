@@ -519,7 +519,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run metrics (Semgrep + advisory gate)
+      # Pass 1 stack hints (monorepo) when prepare succeeded
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: agentic-prepare
+          path: ${{ env.AGENTIC_TMP }}
+
+      - name: Run metrics (stack-aware Semgrep + advisory gate)
         id: metrics
         env:
           GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -528,7 +536,6 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           mkdir -p "${AGENTIC_TMP}"
-          # Prefer prepare artifact list when available
           bash "$PIPELINE_DIR/scripts/run-metrics.sh"
 
       - name: Upload metrics artifacts
@@ -540,6 +547,8 @@ jobs:
             ${{ env.AGENTIC_TMP }}/gate-result.json
             ${{ env.AGENTIC_TMP }}/quality-gate.md
             ${{ env.AGENTIC_TMP }}/semgrep-findings.json
+            ${{ env.AGENTIC_TMP }}/metrics-languages.json
+            ${{ env.AGENTIC_TMP }}/semgrep-configs.json
             ${{ env.AGENTIC_TMP }}/pr-changed-files.txt
           retention-days: 1
           if-no-files-found: warn

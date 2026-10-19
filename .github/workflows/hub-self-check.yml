@@ -1,0 +1,78 @@
+# Dogfood: keep the hub clean before asking thousands of repos to call it.
+name: Hub self-check
+
+on:
+  pull_request:
+    branches: [main, harsha]
+  push:
+    branches: [main, harsha, phase-1-metrics-semgrep]
+
+permissions:
+  contents: read
+
+jobs:
+  self-check:
+    name: Schema · Python · Shell syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate JSON schemas and examples
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for p in [
+              Path("schemas/finding.schema.json"),
+              Path("schemas/findings-bundle.schema.json"),
+              Path("schemas/findings.example.json"),
+          ]:
+              json.load(p.open())
+              print(f"OK {p}")
+          PY
+
+      - name: Python compile metrics modules
+        run: |
+          python3 -m py_compile \
+            scripts/metrics/normalize-semgrep.py \
+            scripts/metrics/evaluate-gate.py
+          echo "OK py_compile"
+
+      - name: Bash syntax check (metrics + entrypoints)
+        run: |
+          set -euo pipefail
+          files=(
+            scripts/run-metrics.sh
+            scripts/run-semgrep.sh
+            scripts/apply-quality-gate.sh
+            scripts/filter-pr-diff.sh
+            scripts/metrics/detect-languages.sh
+            scripts/metrics/select-semgrep-configs.sh
+            scripts/metrics/install-semgrep.sh
+            scripts/metrics/scan-semgrep.sh
+            scripts/metrics/merge-findings.sh
+          )
+          for f in "${files[@]}"; do
+            bash -n "$f"
+            echo "OK bash -n $f"
+          done
+
+      - name: ShellCheck (errors only)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          # Source commons via explicit path; ignore info/style noise for CI green
+          shellcheck -S error \
+            -e SC1091 \
+            scripts/run-metrics.sh \
+            scripts/run-semgrep.sh \
+            scripts/apply-quality-gate.sh \
+            scripts/filter-pr-diff.sh \
+            scripts/metrics/*.sh
