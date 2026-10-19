@@ -23,10 +23,20 @@ if [[ "${CODE_COUNT}" -eq 0 ]]; then
   exit 0
 fi
 
+USER_BIN="$(python3 -c 'import site; print(site.USER_BASE + "/bin")' 2>/dev/null || true)"
+[[ -n "$USER_BIN" && -d "$USER_BIN" ]] && export PATH="${USER_BIN}:${PATH}"
+
 if ! command -v lizard >/dev/null 2>&1; then
   agentic_log "  Installing lizard==${LIZARD_VERSION}"
   python3 -m pip install --quiet "lizard==${LIZARD_VERSION}" \
     || pip3 install --quiet "lizard==${LIZARD_VERSION}"
+  [[ -n "$USER_BIN" && -d "$USER_BIN" ]] && export PATH="${USER_BIN}:${PATH}"
+fi
+
+if command -v lizard >/dev/null 2>&1; then
+  LIZARD=(lizard)
+else
+  LIZARD=(python3 -m lizard)
 fi
 
 TARGETS_FILE="${AGENTIC_TMP}/lizard-targets.txt"
@@ -43,7 +53,7 @@ head -n 400 "$TARGETS_FILE" > "${TARGETS_FILE}.trim" && mv "${TARGETS_FILE}.trim
 
 set +e
 # CSV: file, function, long_name, nloc, ccn, token, param, length, location
-lizard -C 0 --csv $(tr '\n' ' ' < "$TARGETS_FILE") > "$RAW" 2>"${AGENTIC_TMP}/lizard-stderr.txt"
+"${LIZARD[@]}" -C 0 --csv $(tr '\n' ' ' < "$TARGETS_FILE") > "$RAW" 2>"${AGENTIC_TMP}/lizard-stderr.txt"
 RC=$?
 set -e
 

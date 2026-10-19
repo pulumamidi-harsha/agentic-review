@@ -76,8 +76,17 @@ fi
 agentic_log "  Configs: ${CONFIGS_LOG}"
 agentic_log "  Targets: ${#TARGETS[@]} path(s)"
 
+# Resolve CLI (PATH or python -m) — works after --user pip installs
+USER_BIN="$(python3 -c 'import site; print(site.USER_BASE + "/bin")' 2>/dev/null || true)"
+[[ -n "$USER_BIN" && -d "$USER_BIN" ]] && export PATH="${USER_BIN}:${PATH}"
+if command -v semgrep >/dev/null 2>&1; then
+  SEMGREP=(semgrep)
+else
+  SEMGREP=(python3 -m semgrep)
+fi
+
 set +e
-semgrep scan "${CFG_ARGS[@]}" --json --quiet --timeout 30 \
+"${SEMGREP[@]}" scan "${CFG_ARGS[@]}" --json --quiet --timeout 30 \
   "${EXCLUDE_ARGS[@]}" \
   "${TARGETS[@]}" > "$RAW" 2>"${AGENTIC_TMP}/semgrep-stderr.txt"
 RC=$?
@@ -87,7 +96,7 @@ set -e
 if [[ $RC -ne 0 && $RC -ne 1 ]]; then
   agentic_log "  Semgrep exit ${RC}; retrying with p/ci only"
   set +e
-  semgrep scan --config p/ci --json --quiet --timeout 30 \
+  "${SEMGREP[@]}" scan --config p/ci --json --quiet --timeout 30 \
     "${EXCLUDE_ARGS[@]}" \
     "${TARGETS[@]}" > "$RAW" 2>"${AGENTIC_TMP}/semgrep-stderr.txt"
   RC=$?

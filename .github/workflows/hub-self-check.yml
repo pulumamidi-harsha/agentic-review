@@ -212,10 +212,8 @@ jobs:
           set -euo pipefail
           export AGENTIC_TMP=$(mktemp -d)
           mkdir -p "$AGENTIC_TMP"
-          # Use demo paths if present
           if [[ -d examples/monorepo-demo ]]; then
             cd examples/monorepo-demo
-            git init -q 2>/dev/null || true
             find . -type f \( -name '*.py' -o -name '*.ts' -o -name '*.js' \) \
               | sed 's|^\./||' | head -n 50 > "$AGENTIC_TMP/pr-changed-files.txt"
             bash ../../scripts/metrics/detect-languages.sh
@@ -224,3 +222,35 @@ jobs:
           else
             echo "skip monorepo demo"
           fi
+
+  metrics-e2e:
+    name: Metrics E2E (monorepo-demo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node (jscpd)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run full metrics smoke
+        run: |
+          chmod +x scripts/smoke-metrics-demo.sh
+          bash scripts/smoke-metrics-demo.sh
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-smoke
+          path: .tmp-metrics-smoke/
+          retention-days: 7
+          if-no-files-found: warn
