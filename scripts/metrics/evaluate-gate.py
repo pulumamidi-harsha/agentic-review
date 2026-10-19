@@ -202,7 +202,7 @@ def evaluate(
     notes = {
         "advisory": "Advisory mode: GitHub check stays green. Flip to soft_fail after pilot.",
         "soft_fail": "Soft-fail: check fails on fail_if (secrets/errors). Teams may mark check non-required.",
-        "hard_fail": "Hard-fail: fail_if and warn_if both block. Enable only after Sonar shadow parity.",
+        "hard_fail": "Hard-fail: fail_if and warn_if both block. Enable only when the org is ready.",
     }
 
     return {

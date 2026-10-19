@@ -1,20 +1,16 @@
-# Hub-owned quality gate — source of truth (not SonarQube).
-# Callers inherit this file via pipeline_ref. Override mode per org with
-# AGENTIC_GATE_MODE=advisory|soft_fail|hard_fail without forking the YAML.
+# Org quality gate — replaces SonarQube for this pipeline.
+# Policy (mode / fail_if / warn_if) lives here.
+# What to scan lives in config/packages/<package>.yml (engines + Semgrep packs).
 #
-# mode:
-#   advisory  — report only; never fail the GitHub check (default for org rollout)
-#   soft_fail — fail check on fail_if; warn_if stays non-blocking
-#   hard_fail — fail_if + warn_if both block (enable only after Sonar shadow parity)
+# Override mode without forking: AGENTIC_GATE_MODE=advisory|soft_fail|hard_fail
 
 version: 1
+package: default
 mode: advisory
 
 on_pull_request:
-  # Sonar-style fudge: skip coverage/duplication/complexity on tiny PRs
   min_new_lines_for_coverage_dup: 20
 
-  # Evaluated for findings with in_pr_diff: true (secrets: any)
   fail_if:
     - new_secrets: true
     - new_findings_severity: [error]

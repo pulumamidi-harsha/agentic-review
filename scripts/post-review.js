@@ -149,7 +149,6 @@ try { commands = JSON.parse(read(`${AGENTIC_TMP}/ai-commands.json`, '{}')); } ca
 const dockerResults = read(`${AGENTIC_TMP}/docker-results.txt`).trim();
 const securityResults = read(`${AGENTIC_TMP}/security-results.txt`).trim();
 const auditResults = read(`${AGENTIC_TMP}/audit-results.txt`).trim();
-const sonarResults = read(`${AGENTIC_TMP}/sonar-results.txt`).trim();
 const customPayload = read(`${AGENTIC_TMP}/validated-payload.txt`).trim();
 const checkCoverageMd = read(`${AGENTIC_TMP}/check-coverage.md`).trim();
 let coverageData = {};
@@ -380,7 +379,6 @@ const issuesOther = otherIssues.map(i => {
 const securityAndHygiene = [
   securityResults,
   dockerFound && dockerResults ? `**Docker / Trivy**\n\n${dockerResults}` : '',
-  sonarResults ? `**SonarQube**\n\n${sonarResults}` : '',
   auditResults ? `**Dependency audit**\n\n${auditResults}` : '',
 ].filter(Boolean).join('\n\n---\n\n');
 

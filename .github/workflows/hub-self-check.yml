@@ -51,7 +51,7 @@ jobs:
             scripts/metrics/normalize-lizard.py \
             scripts/metrics/normalize-coverage.py \
             scripts/metrics/evaluate-gate.py \
-            scripts/metrics/compare-sonar-shadow.py
+            scripts/metrics/load-package.py
           echo "OK py_compile"
 
       - name: Bash syntax check (metrics + entrypoints)
@@ -184,7 +184,7 @@ jobs:
           jq -e '.mode=="hard_fail" and .blocking==true and .status=="fail"' "$TMP/gate.json"
           echo "OK gate modes"
 
-      - name: Normalizer smoke (jscpd / lizard / coverage / shadow)
+      - name: Normalizer smoke (jscpd / lizard / coverage)
         run: |
           set -euo pipefail
           TMP=$(mktemp -d)
@@ -200,12 +200,7 @@ jobs:
           python3 scripts/metrics/normalize-coverage.py \
             "$TMP/changed.txt" "$TMP/c.json" 80 "$TMP" "$TMP"
           jq -e 'length>=1' "$TMP/c.json"
-          echo '{"status":"pass"}' > "$TMP/gate.json"
-          echo 'Quality Gate passed' > "$TMP/sonar.txt"
-          python3 scripts/metrics/compare-sonar-shadow.py \
-            "$TMP/gate.json" "$TMP/sonar.txt" "$TMP/shadow.json"
-          jq -e '.agree==true' "$TMP/shadow.json"
-          echo "OK normalizers + shadow"
+          echo "OK normalizers"
 
       - name: Monorepo language detect smoke
         run: |
@@ -222,6 +217,15 @@ jobs:
           else
             echo "skip monorepo demo"
           fi
+
+      - name: Quality package load smoke
+        run: |
+          set -euo pipefail
+          TMP=$(mktemp -d)
+          python3 scripts/metrics/load-package.py config/quality-gate.yml config/packages "$TMP/pkg.json"
+          jq -e '.name=="default" and .semgrep_enabled==true' "$TMP/pkg.json"
+          test -f config/packages/default/rules/gha-unpinned-ref.yml
+          echo "OK quality package"
 
   metrics-e2e:
     name: Metrics E2E (monorepo-demo)

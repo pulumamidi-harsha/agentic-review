@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Merge findings → evaluate hub quality-gate.yml → optional Sonar shadow.
+# Merge findings → evaluate hub quality-gate.yml policy.
 # Exit code follows gate-result.exit_code (0 advisory; 1 soft/hard when blocking).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,33 +26,6 @@ python3 "${METRICS_DIR}/evaluate-gate.py" \
   "${AGENTIC_TMP}/gate-result.json" \
   "${AGENTIC_TMP}/quality-gate.md" \
   "${NEW_LINES}"
-
-# Sonar shadow parity (best-effort; sonar-results.txt may arrive later in finalize)
-if [[ -f "${AGENTIC_TMP}/sonar-results.txt" ]]; then
-  python3 "${METRICS_DIR}/compare-sonar-shadow.py" \
-    "${AGENTIC_TMP}/gate-result.json" \
-    "${AGENTIC_TMP}/sonar-results.txt" \
-    "${AGENTIC_TMP}/shadow-parity.json" || true
-else
-  python3 - <<'PY'
-import json, os
-from pathlib import Path
-tmp = Path(os.environ.get("AGENTIC_TMP", "/tmp/agentic-review"))
-gate = {}
-gp = tmp / "gate-result.json"
-if gp.is_file():
-    gate = json.loads(gp.read_text(encoding="utf-8"))
-out = {
-    "hub_status": gate.get("status", "unknown"),
-    "sonar_status": "absent",
-    "agree": None,
-    "sonar_present": False,
-    "note": "Sonar results not yet available in this job; finalize re-runs shadow compare.",
-}
-(tmp / "shadow-parity.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
-print("  Shadow: sonar absent in metrics job (finalize will compare)")
-PY
-fi
 
 STATUS=$(jq -r '.status' "${AGENTIC_TMP}/gate-result.json")
 MODE=$(jq -r '.mode' "${AGENTIC_TMP}/gate-result.json")

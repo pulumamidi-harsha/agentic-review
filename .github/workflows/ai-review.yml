@@ -450,46 +450,8 @@ jobs:
           path: ${{ env.AGENTIC_TMP }}/
           retention-days: 1
 
-  sonar:
-    name: SonarQube results
-    needs: gate
-    if: needs.gate.outputs.skip != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout PR repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Clone pipeline scripts
-        env:
-          PIPELINE_TOKEN: ${{ secrets.ORG_PAT || github.token }}
-          PIPELINE_REPO: ${{ inputs.pipeline_repository }}
-          PIPELINE_REF: ${{ inputs.pipeline_ref }}
-        run: |
-          rm -rf "$PIPELINE_DIR"
-          git clone "https://x-access-token:${PIPELINE_TOKEN}@github.com/${PIPELINE_REPO}.git" "$PIPELINE_DIR"
-          git -C "$PIPELINE_DIR" checkout "$PIPELINE_REF"
-
-      - name: Fetch SonarQube
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.ORG_PAT || github.token }}
-        run: |
-          mkdir -p "${AGENTIC_TMP}"
-          bash "$PIPELINE_DIR/scripts/run-sonar.sh"
-
-      - name: Upload SonarQube artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: agentic-sonar
-          path: ${{ env.AGENTIC_TMP }}/
-          retention-days: 1
-
-  # Hub-owned metrics + quality gate (Semgrep, jscpd, Lizard, coverage).
-  # Default mode=advisory (never blocks). soft_fail/hard_fail via quality-gate.yml
-  # or AGENTIC_GATE_MODE. Waits on checks when present so coverage artifacts exist.
+  # Quality gate package (config/packages/*) — Semgrep/Actions/dup/complexity/coverage.
+  # No SonarQube. Mode via quality-gate.yml or AGENTIC_GATE_MODE.
   metrics:
     name: Metrics and quality gate
     needs: [gate, prepare, checks]
@@ -542,7 +504,7 @@ jobs:
           name: agentic-checks
           path: ${{ env.AGENTIC_TMP }}
 
-      - name: Run metrics (Semgrep · jscpd · Lizard · coverage · gate)
+      - name: Run quality-gate package
         id: metrics
         env:
           GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -566,7 +528,6 @@ jobs:
             ${{ env.AGENTIC_TMP }}/findings.json
             ${{ env.AGENTIC_TMP }}/gate-result.json
             ${{ env.AGENTIC_TMP }}/quality-gate.md
-            ${{ env.AGENTIC_TMP }}/shadow-parity.json
             ${{ env.AGENTIC_TMP }}/semgrep-findings.json
             ${{ env.AGENTIC_TMP }}/jscpd-findings.json
             ${{ env.AGENTIC_TMP }}/lizard-findings.json
@@ -579,7 +540,7 @@ jobs:
 
   finalize:
     name: AI review and publish
-    needs: [gate, prepare, checks, scans, docker, sonar, metrics]
+    needs: [gate, prepare, checks, scans, docker, metrics]
     if: always() && needs.gate.outputs.skip != 'true' && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -621,33 +582,12 @@ jobs:
           name: agentic-docker
           path: ${{ env.AGENTIC_TMP }}
 
-      - name: Download SonarQube artifacts
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: agentic-sonar
-          path: ${{ env.AGENTIC_TMP }}
-
       - name: Download metrics artifacts
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: agentic-metrics
           path: ${{ env.AGENTIC_TMP }}
-
-      - name: Sonar shadow parity (hub vs Sonar evidence log)
-        if: always()
-        continue-on-error: true
-        run: |
-          mkdir -p "${AGENTIC_TMP}"
-          python3 "$PIPELINE_DIR/scripts/metrics/compare-sonar-shadow.py" \
-            "${AGENTIC_TMP}/gate-result.json" \
-            "${AGENTIC_TMP}/sonar-results.txt" \
-            "${AGENTIC_TMP}/shadow-parity.json" || true
-          if [[ -f "${AGENTIC_TMP}/shadow-parity.json" ]]; then
-            echo "Shadow parity:"
-            cat "${AGENTIC_TMP}/shadow-parity.json"
-          fi
 
       - name: Download timer artifact
         uses: actions/download-artifact@v4

@@ -52,21 +52,18 @@ LH:8
 end_of_record
 EOF
 
-# Fake Sonar shadow text
-echo "SonarQube Quality Gate passed" > "${AGENTIC_TMP}/sonar-results.txt"
-
 cd "$ROOT"
 
-bash "${SCRIPT_DIR}/metrics/detect-languages.sh"
-bash "${SCRIPT_DIR}/run-semgrep.sh"
-bash "${SCRIPT_DIR}/run-jscpd.sh"
-bash "${SCRIPT_DIR}/run-lizard.sh"
-bash "${SCRIPT_DIR}/run-coverage-gate.sh"
-bash "${SCRIPT_DIR}/apply-quality-gate.sh"
+set +e
+bash "${SCRIPT_DIR}/run-metrics.sh"
+SMOKE_RC=$?
+set -e
+# advisory mode should exit 0
+[[ "$SMOKE_RC" -eq 0 ]] || { agentic_log "run-metrics exited ${SMOKE_RC}"; exit 1; }
 
 agentic_log ""
 agentic_log "── Artifacts ──"
-for f in findings.json gate-result.json quality-gate.md shadow-parity.json \
+for f in findings.json gate-result.json quality-gate.md quality-package.json \
          semgrep-findings.json jscpd-findings.json lizard-findings.json \
          coverage-findings.json metrics-languages.json; do
   if [[ -f "${AGENTIC_TMP}/${f}" ]]; then
@@ -79,7 +76,6 @@ done
 
 jq -e '.schema_version and (.findings | type=="array")' "${AGENTIC_TMP}/findings.json" >/dev/null
 jq -e '.mode and .status' "${AGENTIC_TMP}/gate-result.json" >/dev/null
-jq -e '.hub_status and (.sonar_present==true)' "${AGENTIC_TMP}/shadow-parity.json" >/dev/null
 jq -e '.pr_code_file_count >= 1' "${AGENTIC_TMP}/metrics-languages.json" >/dev/null
 
 # Coverage planted at 30% → expect ≥1 coverage finding and gate warn (advisory)
@@ -92,7 +88,6 @@ jq -e '.status=="warn" and .mode=="advisory" and .blocking==false' \
 
 agentic_log ""
 agentic_log "Gate: $(jq -c '{status,mode,blocking,counts}' "${AGENTIC_TMP}/gate-result.json")"
-agentic_log "Shadow: $(jq -c . "${AGENTIC_TMP}/shadow-parity.json")"
 agentic_log "Engines: $(jq -r '[.findings[].engine] | unique | join(", ")' "${AGENTIC_TMP}/findings.json")"
 agentic_log "═══ Smoke PASSED ═══"
 exit 0
