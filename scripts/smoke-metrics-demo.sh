@@ -15,8 +15,9 @@ export GITHUB_BASE_REF="${GITHUB_BASE_REF:-main}"
 export GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-bayer-int/agentic-review}"
 export COVERAGE_THRESHOLD_PCT="${COVERAGE_THRESHOLD_PCT:-80}"
 export LIZARD_COMPLEXITY_THRESHOLD="${LIZARD_COMPLEXITY_THRESHOLD:-15}"
-# Keep smoke non-blocking
+# Keep smoke non-blocking; force non-tiny PR so coverage/dup gates apply
 export AGENTIC_GATE_MODE="${AGENTIC_GATE_MODE:-advisory}"
+export AGENTIC_FORCE_NEW_LINES="${AGENTIC_FORCE_NEW_LINES:-100}"
 
 # Prefer user-site CLIs after pip --user
 USER_BIN="$(python3 -c 'import site; print(site.USER_BASE + "/bin")' 2>/dev/null || true)"
@@ -81,10 +82,13 @@ jq -e '.mode and .status' "${AGENTIC_TMP}/gate-result.json" >/dev/null
 jq -e '.hub_status and (.sonar_present==true)' "${AGENTIC_TMP}/shadow-parity.json" >/dev/null
 jq -e '.pr_code_file_count >= 1' "${AGENTIC_TMP}/metrics-languages.json" >/dev/null
 
-# Coverage planted at 30% → expect ≥1 coverage finding
+# Coverage planted at 30% → expect ≥1 coverage finding and gate warn (advisory)
 COV=$(jq '[.[] | select(.engine=="coverage" and .severity!="info")] | length' \
   "${AGENTIC_TMP}/coverage-findings.json")
 [[ "$COV" -ge 1 ]] || { agentic_log "Expected coverage finding, got ${COV}"; exit 1; }
+jq -e '.status=="warn" and .mode=="advisory" and .blocking==false' \
+  "${AGENTIC_TMP}/gate-result.json" >/dev/null \
+  || { agentic_log "Expected advisory warn from coverage; got:"; cat "${AGENTIC_TMP}/gate-result.json"; exit 1; }
 
 agentic_log ""
 agentic_log "Gate: $(jq -c '{status,mode,blocking,counts}' "${AGENTIC_TMP}/gate-result.json")"

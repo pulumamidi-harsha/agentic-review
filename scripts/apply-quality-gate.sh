@@ -13,7 +13,9 @@ GATE_FILE="${PIPELINE_DIR}/config/quality-gate.yml"
 bash "${METRICS_DIR}/merge-findings.sh"
 
 NEW_LINES=0
-if git rev-parse --verify "origin/${GITHUB_BASE_REF:-main}" >/dev/null 2>&1; then
+if [[ -n "${AGENTIC_FORCE_NEW_LINES:-}" ]]; then
+  NEW_LINES="${AGENTIC_FORCE_NEW_LINES}"
+elif git rev-parse --verify "origin/${GITHUB_BASE_REF:-main}" >/dev/null 2>&1; then
   NEW_LINES=$(git diff --numstat "origin/${GITHUB_BASE_REF:-main}...HEAD" 2>/dev/null \
     | awk '{ add+=$1 } END { print add+0 }' || echo 0)
 fi
