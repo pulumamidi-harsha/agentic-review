@@ -41,9 +41,10 @@ fi
 
 TARGETS_FILE="${AGENTIC_TMP}/lizard-targets.txt"
 : > "$TARGETS_FILE"
-jq -r '.pr_code_files[]?' "$LANG_FILE" 2>/dev/null | while read -r f; do
-  [[ -f "$f" ]] && echo "$f"
-done > "$TARGETS_FILE"
+while IFS= read -r f; do
+  [[ -z "$f" || ! -f "$f" ]] && continue
+  echo "$f" >> "$TARGETS_FILE"
+done < <(jq -r '.pr_code_files[]?' "$LANG_FILE" 2>/dev/null || true)
 
 if [[ ! -s "$TARGETS_FILE" ]]; then
   agentic_log "  No on-disk targets — skip lizard"

@@ -51,9 +51,12 @@ if [[ "${METRICS_SCAN_MODE:-}" == "full_repo" || "$SCAN_MODE" == "full_repo" ]];
   TARGETS=(.)
 else
   agentic_log "  Scan mode: changed_files (PR-scoped; monorepo-safe)"
-  jq -r '.pr_code_files[]?' "$LANG_FILE" 2>/dev/null | while read -r f; do
-    [[ -f "$f" ]] && echo "$f"
-  done > "$TARGETS_FILE"
+  : > "$TARGETS_FILE"
+  # Process substitution avoids pipefail+EOF-from-read aborting set -e scripts
+  while IFS= read -r f; do
+    [[ -z "$f" || ! -f "$f" ]] && continue
+    echo "$f" >> "$TARGETS_FILE"
+  done < <(jq -r '.pr_code_files[]?' "$LANG_FILE" 2>/dev/null || true)
   if [[ ! -s "$TARGETS_FILE" ]]; then
     agentic_log "  No existing code files on disk from PR list — skipping"
     echo '{"results":[]}' > "$RAW"
