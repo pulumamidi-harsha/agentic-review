@@ -1,4 +1,5 @@
 # AI PR Review — monorepo demo (Node + Python + Terraform)
+# Points at Phase 1 metrics branch for pilot testing.
 name: AI PR Review
 
 on:
@@ -13,13 +14,12 @@ permissions:
 
 jobs:
   ai-review:
-    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@09afd0f4f16233237bb78a05c3f0634d069892e1 # rewrite README + cleanup
+    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@phase-1-metrics-semgrep
     with:
       review_type: quick
-      pipeline_repository: pulumamidi-harsha/agentic-review
-      pipeline_ref: 068f5516defe11975c593d4c6592b7e7657f6152
+      pipeline_repository: bayer-int/agentic-review
+      pipeline_ref: phase-1-metrics-semgrep
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
-      # Optional for public pipeline repo — falls back to github.token in the workflow
       ORG_PAT: ${{ secrets.ORG_PAT || github.token }}

@@ -21,7 +21,11 @@ permissions:
 
 jobs:
   ai-review:
-    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
+    # Pilot: Phase 1 metrics (Semgrep · jscpd · Lizard · coverage). After merge use @main.
+    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@phase-1-metrics-semgrep
+    with:
+      pipeline_repository: bayer-int/agentic-review
+      pipeline_ref: phase-1-metrics-semgrep
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}

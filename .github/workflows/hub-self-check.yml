@@ -1,0 +1,256 @@
+# Dogfood: keep the hub clean before asking thousands of repos to call it.
+name: Hub self-check
+
+on:
+  pull_request:
+    branches: [main, harsha]
+  push:
+    branches: [main, harsha, phase-1-metrics-semgrep]
+
+permissions:
+  contents: read
+
+jobs:
+  self-check:
+    name: Schema · metrics · gate · smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node (jscpd path)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate JSON schemas and examples
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for p in [
+              Path("schemas/finding.schema.json"),
+              Path("schemas/findings-bundle.schema.json"),
+              Path("schemas/findings.example.json"),
+          ]:
+              json.load(p.open())
+              print(f"OK {p}")
+          PY
+
+      - name: Python compile metrics modules
+        run: |
+          python3 -m py_compile \
+            scripts/metrics/normalize-semgrep.py \
+            scripts/metrics/normalize-jscpd.py \
+            scripts/metrics/normalize-lizard.py \
+            scripts/metrics/normalize-coverage.py \
+            scripts/metrics/evaluate-gate.py \
+            scripts/metrics/compare-sonar-shadow.py
+          echo "OK py_compile"
+
+      - name: Bash syntax check (metrics + entrypoints)
+        run: |
+          set -euo pipefail
+          files=(
+            scripts/run-metrics.sh
+            scripts/run-semgrep.sh
+            scripts/run-jscpd.sh
+            scripts/run-lizard.sh
+            scripts/run-coverage-gate.sh
+            scripts/apply-quality-gate.sh
+            scripts/filter-pr-diff.sh
+            scripts/metrics/detect-languages.sh
+            scripts/metrics/select-semgrep-configs.sh
+            scripts/metrics/install-semgrep.sh
+            scripts/metrics/scan-semgrep.sh
+            scripts/metrics/merge-findings.sh
+            scripts/metrics/run-jscpd.sh
+            scripts/metrics/run-lizard.sh
+            scripts/metrics/run-coverage-gate.sh
+          )
+          for f in "${files[@]}"; do
+            bash -n "$f"
+            echo "OK bash -n $f"
+          done
+
+      - name: ShellCheck (errors only)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S error \
+            -e SC1091 \
+            scripts/run-metrics.sh \
+            scripts/run-semgrep.sh \
+            scripts/run-jscpd.sh \
+            scripts/run-lizard.sh \
+            scripts/run-coverage-gate.sh \
+            scripts/apply-quality-gate.sh \
+            scripts/filter-pr-diff.sh \
+            scripts/metrics/*.sh
+
+      - name: Gate mode unit smoke (advisory / soft / hard)
+        run: |
+          set -euo pipefail
+          TMP=$(mktemp -d)
+          export AGENTIC_TMP="$TMP"
+          cat > "$TMP/findings.json" <<'EOF'
+          {
+            "schema_version": "1.0.0",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "repository": "test/hub",
+            "head_sha": "abc",
+            "pr_number": 1,
+            "findings": [
+              {
+                "engine": "semgrep",
+                "rule_id": "test.secret",
+                "severity": "error",
+                "category": "secret",
+                "path": "a.env",
+                "start_line": 1,
+                "end_line": 1,
+                "message": "hardcoded secret",
+                "remediation": "remove",
+                "in_pr_diff": true,
+                "fingerprint": "t1",
+                "raw": null
+              },
+              {
+                "engine": "jscpd",
+                "rule_id": "duplication",
+                "severity": "warning",
+                "category": "duplication",
+                "path": "src/a.js",
+                "start_line": 1,
+                "end_line": 20,
+                "message": "dup",
+                "remediation": "extract",
+                "in_pr_diff": true,
+                "fingerprint": "t2",
+                "raw": null
+              }
+            ]
+          }
+          EOF
+
+          # advisory: never blocking
+          unset AGENTIC_GATE_MODE
+          python3 scripts/metrics/evaluate-gate.py \
+            "$TMP/findings.json" config/quality-gate.yml \
+            "$TMP/gate.json" "$TMP/gate.md" 100
+          jq -e '.mode=="advisory" and .blocking==false and .status=="fail"' "$TMP/gate.json"
+
+          # soft_fail: blocking on secrets
+          AGENTIC_GATE_MODE=soft_fail python3 scripts/metrics/evaluate-gate.py \
+            "$TMP/findings.json" config/quality-gate.yml \
+            "$TMP/gate.json" "$TMP/gate.md" 100
+          jq -e '.mode=="soft_fail" and .blocking==true and .exit_code==1' "$TMP/gate.json"
+
+          # hard_fail: warn_if also blocks
+          cat > "$TMP/findings-warn.json" <<'EOF'
+          {
+            "schema_version": "1.0.0",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "repository": "test/hub",
+            "head_sha": "abc",
+            "pr_number": 1,
+            "findings": [
+              {
+                "engine": "jscpd",
+                "rule_id": "duplication",
+                "severity": "warning",
+                "category": "duplication",
+                "path": "src/a.js",
+                "start_line": 1,
+                "end_line": 20,
+                "message": "dup",
+                "remediation": "extract",
+                "in_pr_diff": true,
+                "fingerprint": "t2",
+                "raw": null
+              }
+            ]
+          }
+          EOF
+          AGENTIC_GATE_MODE=hard_fail python3 scripts/metrics/evaluate-gate.py \
+            "$TMP/findings-warn.json" config/quality-gate.yml \
+            "$TMP/gate.json" "$TMP/gate.md" 100
+          jq -e '.mode=="hard_fail" and .blocking==true and .status=="fail"' "$TMP/gate.json"
+          echo "OK gate modes"
+
+      - name: Normalizer smoke (jscpd / lizard / coverage / shadow)
+        run: |
+          set -euo pipefail
+          TMP=$(mktemp -d)
+          echo 'src/a.js' > "$TMP/changed.txt"
+          echo '[]' > "$TMP/jscpd-raw.json"
+          python3 scripts/metrics/normalize-jscpd.py "$TMP/jscpd-raw.json" "$TMP/changed.txt" "$TMP/j.json"
+          printf '10,20,30,1,40,a.js:1-10,src/a.js,too_complex,x\n' > "$TMP/lizard.csv"
+          python3 scripts/metrics/normalize-lizard.py "$TMP/lizard.csv" "$TMP/changed.txt" "$TMP/l.json" 15
+          jq -e 'length==1' "$TMP/l.json"
+          mkdir -p "$TMP/coverage"
+          printf 'TN:\nSF:src/a.js\nLF:10\nLH:2\nend_of_record\n' > "$TMP/coverage/lcov.info"
+          # normalize-coverage searches AGENTIC_TMP + workdir
+          python3 scripts/metrics/normalize-coverage.py \
+            "$TMP/changed.txt" "$TMP/c.json" 80 "$TMP" "$TMP"
+          jq -e 'length>=1' "$TMP/c.json"
+          echo '{"status":"pass"}' > "$TMP/gate.json"
+          echo 'Quality Gate passed' > "$TMP/sonar.txt"
+          python3 scripts/metrics/compare-sonar-shadow.py \
+            "$TMP/gate.json" "$TMP/sonar.txt" "$TMP/shadow.json"
+          jq -e '.agree==true' "$TMP/shadow.json"
+          echo "OK normalizers + shadow"
+
+      - name: Monorepo language detect smoke
+        run: |
+          set -euo pipefail
+          export AGENTIC_TMP=$(mktemp -d)
+          mkdir -p "$AGENTIC_TMP"
+          if [[ -d examples/monorepo-demo ]]; then
+            cd examples/monorepo-demo
+            find . -type f \( -name '*.py' -o -name '*.ts' -o -name '*.js' \) \
+              | sed 's|^\./||' | head -n 50 > "$AGENTIC_TMP/pr-changed-files.txt"
+            bash ../../scripts/metrics/detect-languages.sh
+            jq -e '.pr_code_file_count >= 0' "$AGENTIC_TMP/metrics-languages.json"
+            echo "OK detect-languages"
+          else
+            echo "skip monorepo demo"
+          fi
+
+  metrics-e2e:
+    name: Metrics E2E (monorepo-demo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node (jscpd)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run full metrics smoke
+        run: |
+          chmod +x scripts/smoke-metrics-demo.sh
+          bash scripts/smoke-metrics-demo.sh
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-smoke
+          path: .tmp-metrics-smoke/
+          retention-days: 7
+          if-no-files-found: warn
