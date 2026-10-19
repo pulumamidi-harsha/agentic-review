@@ -1,19 +1,20 @@
-# Phase 0 quality gate — owned by the hub (not SonarQube).
-# Phase 1 metrics jobs will evaluate findings against this file.
+# Hub-owned quality gate — source of truth (not SonarQube).
+# Callers inherit this file via pipeline_ref. Override mode per org with
+# AGENTIC_GATE_MODE=advisory|soft_fail|hard_fail without forking the YAML.
 #
 # mode:
-#   advisory  — report only; never fail the GitHub check (Phase 1 default)
-#   soft_fail — fail check on fail_if, but teams may override
-#   hard_fail — blocking gate (only after shadow parity)
+#   advisory  — report only; never fail the GitHub check (default for org rollout)
+#   soft_fail — fail check on fail_if; warn_if stays non-blocking
+#   hard_fail — fail_if + warn_if both block (enable only after Sonar shadow parity)
 
 version: 1
 mode: advisory
 
 on_pull_request:
-  # Sonar-style fudge: skip coverage/duplication on tiny PRs
+  # Sonar-style fudge: skip coverage/duplication/complexity on tiny PRs
   min_new_lines_for_coverage_dup: 20
 
-  # Evaluated only for findings with in_pr_diff: true (except secrets)
+  # Evaluated for findings with in_pr_diff: true (secrets: any)
   fail_if:
     - new_secrets: true
     - new_findings_severity: [error]
@@ -22,8 +23,3 @@ on_pull_request:
     - new_duplication_blocks: "> 0"
     - changed_file_coverage_pct: "< 80"
     - complexity_increase: "> 15"
-
-# Notes for implementers (Phase 1):
-# - Normalize every scanner into schemas/finding.schema.json
-# - Prefer gating on in_pr_diff=true; secrets may still fail when in_pr_diff=false
-# - Keep Sonar polling as shadow only until parity is proven

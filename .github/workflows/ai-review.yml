@@ -487,17 +487,19 @@ jobs:
           path: ${{ env.AGENTIC_TMP }}/
           retention-days: 1
 
-  # Phase 1: hub-owned metrics + advisory quality gate (Semgrep → finding schema).
-  # Always exit 0 — does not block merge. Sonar job above remains shadow-only.
+  # Hub-owned metrics + quality gate (Semgrep, jscpd, Lizard, coverage).
+  # Default mode=advisory (never blocks). soft_fail/hard_fail via quality-gate.yml
+  # or AGENTIC_GATE_MODE. Waits on checks when present so coverage artifacts exist.
   metrics:
-    name: Metrics and quality gate (advisory)
-    needs: [gate, prepare]
-    if: needs.gate.outputs.skip != 'true'
+    name: Metrics and quality gate
+    needs: [gate, prepare, checks]
+    if: always() && needs.gate.outputs.skip != 'true' && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     outputs:
       gate_status: ${{ steps.metrics.outputs.gate_status }}
       gate_mode: ${{ steps.metrics.outputs.gate_mode }}
+      gate_blocking: ${{ steps.metrics.outputs.gate_blocking }}
     steps:
       - name: Checkout PR repository
         uses: actions/checkout@v4
@@ -519,6 +521,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Node (jscpd)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       # Pass 1 stack hints (monorepo) when prepare succeeded
       - name: Download prepare artifacts
         uses: actions/download-artifact@v4
@@ -527,18 +534,31 @@ jobs:
           name: agentic-prepare
           path: ${{ env.AGENTIC_TMP }}
 
-      - name: Run metrics (stack-aware Semgrep + advisory gate)
+      # Coverage reports from unit-test job (lcov / cobertura / istanbul)
+      - name: Download checks artifacts (coverage)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: agentic-checks
+          path: ${{ env.AGENTIC_TMP }}
+
+      - name: Run metrics (Semgrep · jscpd · Lizard · coverage · gate)
         id: metrics
         env:
           GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
           GITHUB_EVENT_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_EVENT_PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          # Optional override without forking hub YAML: advisory | soft_fail | hard_fail
+          AGENTIC_GATE_MODE: ${{ vars.AGENTIC_GATE_MODE }}
+          COVERAGE_THRESHOLD_PCT: "80"
+          LIZARD_COMPLEXITY_THRESHOLD: "15"
         run: |
           mkdir -p "${AGENTIC_TMP}"
           bash "$PIPELINE_DIR/scripts/run-metrics.sh"
 
       - name: Upload metrics artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: agentic-metrics
@@ -546,11 +566,15 @@ jobs:
             ${{ env.AGENTIC_TMP }}/findings.json
             ${{ env.AGENTIC_TMP }}/gate-result.json
             ${{ env.AGENTIC_TMP }}/quality-gate.md
+            ${{ env.AGENTIC_TMP }}/shadow-parity.json
             ${{ env.AGENTIC_TMP }}/semgrep-findings.json
+            ${{ env.AGENTIC_TMP }}/jscpd-findings.json
+            ${{ env.AGENTIC_TMP }}/lizard-findings.json
+            ${{ env.AGENTIC_TMP }}/coverage-findings.json
             ${{ env.AGENTIC_TMP }}/metrics-languages.json
             ${{ env.AGENTIC_TMP }}/semgrep-configs.json
             ${{ env.AGENTIC_TMP }}/pr-changed-files.txt
-          retention-days: 1
+          retention-days: 14
           if-no-files-found: warn
 
   finalize:
@@ -610,6 +634,20 @@ jobs:
         with:
           name: agentic-metrics
           path: ${{ env.AGENTIC_TMP }}
+
+      - name: Sonar shadow parity (hub vs Sonar evidence log)
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p "${AGENTIC_TMP}"
+          python3 "$PIPELINE_DIR/scripts/metrics/compare-sonar-shadow.py" \
+            "${AGENTIC_TMP}/gate-result.json" \
+            "${AGENTIC_TMP}/sonar-results.txt" \
+            "${AGENTIC_TMP}/shadow-parity.json" || true
+          if [[ -f "${AGENTIC_TMP}/shadow-parity.json" ]]; then
+            echo "Shadow parity:"
+            cat "${AGENTIC_TMP}/shadow-parity.json"
+          fi
 
       - name: Download timer artifact
         uses: actions/download-artifact@v4

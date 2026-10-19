@@ -6,13 +6,12 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")/.." && pwd)/common.sh"
 
 BUNDLE_OUT="${AGENTIC_TMP}/findings.json"
-SEMGREP="${AGENTIC_TMP}/semgrep-findings.json"
-# Future engines (empty → ignored):
-# JSCPD="${AGENTIC_TMP}/jscpd-findings.json"
-# LIZARD="${AGENTIC_TMP}/lizard-findings.json"
 
 mkdir -p "$AGENTIC_TMP"
-[[ -f "$SEMGREP" ]] || echo '[]' > "$SEMGREP"
+# Ensure known engines have empty arrays when a scanner was skipped
+for stub in semgrep-findings.json jscpd-findings.json lizard-findings.json coverage-findings.json; do
+  [[ -f "${AGENTIC_TMP}/${stub}" ]] || echo '[]' > "${AGENTIC_TMP}/${stub}"
+done
 
 REPO="${GITHUB_REPOSITORY:-unknown/unknown}"
 SHA="${GITHUB_EVENT_PULL_REQUEST_HEAD_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
