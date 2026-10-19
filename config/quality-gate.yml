@@ -1,0 +1,29 @@
+# Phase 0 quality gate — owned by the hub (not SonarQube).
+# Phase 1 metrics jobs will evaluate findings against this file.
+#
+# mode:
+#   advisory  — report only; never fail the GitHub check (Phase 1 default)
+#   soft_fail — fail check on fail_if, but teams may override
+#   hard_fail — blocking gate (only after shadow parity)
+
+version: 1
+mode: advisory
+
+on_pull_request:
+  # Sonar-style fudge: skip coverage/duplication on tiny PRs
+  min_new_lines_for_coverage_dup: 20
+
+  # Evaluated only for findings with in_pr_diff: true (except secrets)
+  fail_if:
+    - new_secrets: true
+    - new_findings_severity: [error]
+
+  warn_if:
+    - new_duplication_blocks: "> 0"
+    - changed_file_coverage_pct: "< 80"
+    - complexity_increase: "> 15"
+
+# Notes for implementers (Phase 1):
+# - Normalize every scanner into schemas/finding.schema.json
+# - Prefer gating on in_pr_diff=true; secrets may still fail when in_pr_diff=false
+# - Keep Sonar polling as shadow only until parity is proven

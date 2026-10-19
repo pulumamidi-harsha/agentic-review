@@ -156,6 +156,9 @@ let coverageData = {};
 try { coverageData = JSON.parse(read(`${AGENTIC_TMP}/check-coverage.json`, '{}')); } catch {}
 const pass1SummaryMd = read(`${AGENTIC_TMP}/pass1-summary.md`).trim();
 const instructionSource = read(`${AGENTIC_TMP}/instruction-source.txt`, 'none').trim();
+const qualityGateMd = read(`${AGENTIC_TMP}/quality-gate.md`).trim();
+let gateResult = {};
+try { gateResult = JSON.parse(read(`${AGENTIC_TMP}/gate-result.json`, '{}')); } catch { gateResult = {}; }
 
 const passed = process.env.CHECKS_PASSED ?? '0';
 const failed = process.env.CHECKS_FAILED ?? '0';
@@ -308,12 +311,20 @@ const issuesTable = prIssues.length
   ].join('\n')
   : '';
 
+const gateStatus = gateResult.status || (qualityGateMd ? 'reported' : 'n/a');
+const gateMode = gateResult.mode || 'advisory';
+const gateEmoji = { pass: '✅', warn: '⚠️', fail: '❌' }[gateStatus] || 'ℹ️';
+const qualityGateStatus = qualityGateMd
+  ? `${gateEmoji} \`${gateStatus}\` (${gateMode} · does not block merge)`
+  : '— not run';
+
 const runSummaryTable = [
   '| | |',
   '|:---|:---|',
   `| **Stack** | ${stackInfo} |`,
   `| **Checks** | ${checksStatus} |`,
   `| **Security scans** | ${securityStatus} |`,
+  `| **Quality gate** | ${qualityGateStatus} |`,
   `| **Review mode** | ${reviewType} · ${changedFiles} files · ${diffLines} diff lines |`,
   `| **Duration** | ${durationStr} |`,
   runUrl ? `| **Workflow** | [View run #${process.env.GITHUB_RUN_ID || '?'}](${runUrl}) |` : '',
@@ -415,6 +426,9 @@ const body = [
   '',
   runSummaryTable,
   '',
+  qualityGateMd
+    ? `${qualityGateMd}\n`
+    : '',
   prIssues.length
     ? `### Issues in your changed files (${prIssues.length})\n\n${issuesTable}\n`
     : reviewData.verdict !== 'approve'

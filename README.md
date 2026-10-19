@@ -43,6 +43,19 @@ Your repo adds a small caller workflow. When someone opens or updates a PR, this
 
 **Design choice:** There is no `if language == "python"` in the workflow. Pass 1 is the “brain” for stack detection; bash scripts are the “hands” that run what Pass 1 planned.
 
+### Phase 1 — Hub quality gate (advisory)
+
+In addition to the AI review, a **metrics** job runs Semgrep, normalizes results into [`schemas/finding.schema.json`](schemas/finding.schema.json), and evaluates [`config/quality-gate.yml`](config/quality-gate.yml).
+
+| Behavior | Detail |
+|----------|--------|
+| **Mode** | `advisory` — never fails the GitHub check / never blocks merge |
+| **Source of truth** | Hub gate + Semgrep (diff-scoped when possible) |
+| **SonarQube** | Still polled as **shadow only** — not used for this gate status |
+| **PR comment** | Adds a **Quality gate (advisory)** section with counts and top findings |
+
+Scripts: `run-metrics.sh` → `filter-pr-diff.sh` + `run-semgrep.sh` + `apply-quality-gate.sh`.
+
 ---
 
 ## How to use it

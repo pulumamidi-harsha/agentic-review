@@ -487,9 +487,66 @@ jobs:
           path: ${{ env.AGENTIC_TMP }}/
           retention-days: 1
 
+  # Phase 1: hub-owned metrics + advisory quality gate (Semgrep → finding schema).
+  # Always exit 0 — does not block merge. Sonar job above remains shadow-only.
+  metrics:
+    name: Metrics and quality gate (advisory)
+    needs: [gate, prepare]
+    if: needs.gate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      gate_status: ${{ steps.metrics.outputs.gate_status }}
+      gate_mode: ${{ steps.metrics.outputs.gate_mode }}
+    steps:
+      - name: Checkout PR repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone pipeline scripts
+        env:
+          PIPELINE_TOKEN: ${{ secrets.ORG_PAT || github.token }}
+          PIPELINE_REPO: ${{ inputs.pipeline_repository }}
+          PIPELINE_REF: ${{ inputs.pipeline_ref }}
+        run: |
+          rm -rf "$PIPELINE_DIR"
+          git clone "https://x-access-token:${PIPELINE_TOKEN}@github.com/${PIPELINE_REPO}.git" "$PIPELINE_DIR"
+          git -C "$PIPELINE_DIR" checkout "$PIPELINE_REF"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run metrics (Semgrep + advisory gate)
+        id: metrics
+        env:
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GITHUB_EVENT_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_EVENT_PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          mkdir -p "${AGENTIC_TMP}"
+          # Prefer prepare artifact list when available
+          bash "$PIPELINE_DIR/scripts/run-metrics.sh"
+
+      - name: Upload metrics artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-metrics
+          path: |
+            ${{ env.AGENTIC_TMP }}/findings.json
+            ${{ env.AGENTIC_TMP }}/gate-result.json
+            ${{ env.AGENTIC_TMP }}/quality-gate.md
+            ${{ env.AGENTIC_TMP }}/semgrep-findings.json
+            ${{ env.AGENTIC_TMP }}/pr-changed-files.txt
+          retention-days: 1
+          if-no-files-found: warn
+
   finalize:
     name: AI review and publish
-    needs: [gate, prepare, checks, scans, docker, sonar]
+    needs: [gate, prepare, checks, scans, docker, sonar, metrics]
     if: always() && needs.gate.outputs.skip != 'true' && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -536,6 +593,13 @@ jobs:
         continue-on-error: true
         with:
           name: agentic-sonar
+          path: ${{ env.AGENTIC_TMP }}
+
+      - name: Download metrics artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: agentic-metrics
           path: ${{ env.AGENTIC_TMP }}
 
       - name: Download timer artifact
