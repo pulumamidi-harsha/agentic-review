@@ -21,7 +21,20 @@ def map_category(rule_id: str) -> str:
     rid = rule_id.lower()
     if any(k in rid for k in ("secret", "credential", "password", "api-key", "api.key")):
         return "secret"
-    if any(k in rid for k in ("security", "vuln", "injection", "xss", "sqli", "crypto")):
+    if any(
+        k in rid
+        for k in (
+            "security",
+            "vuln",
+            "injection",
+            "xss",
+            "sqli",
+            "crypto",
+            "github-actions",
+            "gha.",
+            "unpinned",
+        )
+    ):
         return "security"
     return "bug"
 
