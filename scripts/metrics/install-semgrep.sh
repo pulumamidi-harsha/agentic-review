@@ -1,43 +1,62 @@
 #!/usr/bin/env bash
-# Install a pinned Semgrep version (reproducible across ~10k caller repos).
+# Install a pinned Semgrep into AGENTIC_TMP (isolated) so GHA Python images
+# with broken/missing setuptools do not break the scan.
 set -euo pipefail
 # shellcheck source=../common.sh
 source "$(cd "$(dirname "$0")/.." && pwd)/common.sh"
 
 SEMGREP_VERSION="${SEMGREP_VERSION:-1.97.0}"
-
-# Ensure user-site scripts are on PATH (macOS / --user pip installs)
-USER_BIN="$(python3 -c 'import site; print(site.USER_BASE + "/bin")' 2>/dev/null || true)"
-[[ -n "$USER_BIN" && -d "$USER_BIN" ]] && export PATH="${USER_BIN}:${PATH}"
+SEMGREP_PREFIX="${AGENTIC_TMP}/semgrep-prefix"
+SEMGREP_ENV="${AGENTIC_TMP}/semgrep.env"
 
 semgrep_ok() {
-  # Must actually invoke Semgrep — a broken install can still be on PATH.
   set +e
+  # shellcheck disable=SC1090
+  [[ -f "$SEMGREP_ENV" ]] && source "$SEMGREP_ENV"
   local out
-  out="$(semgrep --version 2>/dev/null | head -1)"
+  out="$(python3 -m semgrep --version 2>/dev/null | head -1)"
   local rc=$?
-  if [[ $rc -ne 0 || -z "$out" ]]; then
-    out="$(python3 -m semgrep --version 2>/dev/null | head -1)"
-    rc=$?
-  fi
   set -e
   [[ $rc -eq 0 && -n "$out" ]]
 }
 
 if semgrep_ok; then
-  agentic_log "  Semgrep present: $(semgrep --version 2>/dev/null | head -1 || python3 -m semgrep --version 2>/dev/null | head -1)"
+  # shellcheck disable=SC1090
+  source "$SEMGREP_ENV"
+  agentic_log "  Semgrep present: $(python3 -m semgrep --version 2>/dev/null | head -1)"
   exit 0
 fi
 
-agentic_log "  Installing semgrep==${SEMGREP_VERSION} (+ setuptools for pkg_resources)"
-# setuptools provides pkg_resources — required by opentelemetry-instrumentation
-# on some GitHub runner Python 3.12 images (semgrep import otherwise crashes).
-python3 -m pip install --quiet "setuptools>=65" "semgrep==${SEMGREP_VERSION}" \
-  || pip3 install --quiet "setuptools>=65" "semgrep==${SEMGREP_VERSION}"
-[[ -n "$USER_BIN" && -d "$USER_BIN" ]] && export PATH="${USER_BIN}:${PATH}"
+agentic_log "  Installing semgrep==${SEMGREP_VERSION} into ${SEMGREP_PREFIX}"
+rm -rf "$SEMGREP_PREFIX"
+mkdir -p "$SEMGREP_PREFIX"
+
+set +e
+python3 -m pip install --target "$SEMGREP_PREFIX" --quiet \
+  "setuptools>=75" wheel "semgrep==${SEMGREP_VERSION}"
+PIP_RC=$?
+set -e
+if [[ $PIP_RC -ne 0 ]]; then
+  agentic_log "  quiet pip failed — retrying with logs"
+  python3 -m pip install --target "$SEMGREP_PREFIX" \
+    "setuptools>=75" wheel "semgrep==${SEMGREP_VERSION}"
+fi
+
+# Persist env for scan-semgrep.sh (same job)
+{
+  echo "export PYTHONPATH=\"${SEMGREP_PREFIX}\${PYTHONPATH:+:\$PYTHONPATH}\""
+  echo "export PATH=\"${SEMGREP_PREFIX}/bin\${PATH:+:\$PATH}\""
+} > "$SEMGREP_ENV"
+# shellcheck disable=SC1090
+source "$SEMGREP_ENV"
 
 if ! semgrep_ok; then
-  agentic_log "  ⚠ Semgrep install completed but --version still fails"
-  exit 1
+  agentic_log "  ⚠ Semgrep still not runnable after isolated install:"
+  set +e
+  PYTHONPATH="$SEMGREP_PREFIX" python3 -m semgrep --version 2>&1 | tail -n 25 | while IFS= read -r line; do
+    agentic_log "    $line"
+  done
+  set -e
+  exit 0
 fi
-agentic_log "  Installed: $(semgrep --version 2>/dev/null | head -1 || python3 -m semgrep --version 2>/dev/null | head -1)"
+agentic_log "  Installed: $(python3 -m semgrep --version 2>/dev/null | head -1)"

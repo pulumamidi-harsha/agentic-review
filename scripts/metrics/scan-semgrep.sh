@@ -102,12 +102,17 @@ agentic_log "  Configs: $(printf '%s ' "${REGISTRY_CONFIGS[@]+"${REGISTRY_CONFIG
 agentic_log "  Targets: ${#TARGETS[@]} path(s)"
 agentic_log "  Local rule paths: ${#LOCAL_CONFIGS[@]}"
 
-USER_BIN="$(python3 -c 'import site; print(site.USER_BASE + "/bin")' 2>/dev/null || true)"
-[[ -n "$USER_BIN" && -d "$USER_BIN" ]] && export PATH="${USER_BIN}:${PATH}"
-if command -v semgrep >/dev/null 2>&1; then
-  SEMGREP=(semgrep)
-else
-  SEMGREP=(python3 -m semgrep)
+# Load isolated install env from install-semgrep.sh (same metrics job).
+SEMGREP_ENV="${AGENTIC_TMP}/semgrep.env"
+if [[ -f "$SEMGREP_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$SEMGREP_ENV"
+fi
+SEMGREP=(python3 -m semgrep)
+if ! python3 -m semgrep --version >/dev/null 2>&1; then
+  agentic_log "  ⚠ Semgrep CLI unavailable — writing empty results"
+  echo '{"results":[]}' > "$RAW"
+  exit 0
 fi
 
 json_usable() {

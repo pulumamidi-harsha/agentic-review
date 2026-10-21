@@ -334,7 +334,8 @@ function formatHowToFixDetails(finding) {
     );
   }
 
-  return detailsBlock('How can I fix it?', parts.filter(Boolean).join('\n'), true);
+  // Collapsed by default — expand only when the reviewer wants the fix guide
+  return detailsBlock('How can I fix it?', parts.filter(Boolean).join('\n'), false);
 }
 
 function formatRiskDetails(finding) {
