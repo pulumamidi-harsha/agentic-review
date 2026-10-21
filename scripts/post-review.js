@@ -159,6 +159,20 @@ const qualityGateMd = read(`${AGENTIC_TMP}/quality-gate.md`).trim();
 let gateResult = {};
 try { gateResult = JSON.parse(read(`${AGENTIC_TMP}/gate-result.json`, '{}')); } catch { gateResult = {}; }
 
+let buildInlineComments = () => [];
+let loadFindingsBundle = () => [];
+let FINDING_MARKER = '<!-- agentic-review:finding -->';
+try {
+  const peer = require(path.join(__dirname, 'peer-findings.js'));
+  buildInlineComments = peer.buildInlineComments;
+  loadFindingsBundle = peer.loadFindingsBundle;
+  FINDING_MARKER = peer.FINDING_MARKER;
+} catch (e) {
+  console.log('peer-findings unavailable:', e.message);
+}
+const gateFindings = loadFindingsBundle(AGENTIC_TMP);
+const inlineComments = buildInlineComments(gateFindings);
+
 const passed = process.env.CHECKS_PASSED ?? '0';
 const failed = process.env.CHECKS_FAILED ?? '0';
 const checksExit = process.env.CHECKS_EXIT ?? '0';
@@ -449,4 +463,13 @@ const body = [
   `<sub>🤖 <a href="https://github.com/pulumamidi-harsha/agentic-review">agentic-review</a> · updated each run · ${durationStr} total</sub>`,
 ].filter(Boolean).join('\n');
 
-module.exports = { body, reviewData, durationStr, COMMENT_MARKER };
+module.exports = {
+  body,
+  reviewData,
+  durationStr,
+  COMMENT_MARKER,
+  FINDING_MARKER,
+  inlineComments,
+  gateFindings,
+  gateResult,
+};

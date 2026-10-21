@@ -230,6 +230,72 @@ def evaluate(
     }
 
 
+def _condition_lines(result: Dict[str, Any], findings: List[Dict[str, Any]]) -> List[str]:
+    """Sonar-style failed/warning conditions with thresholds."""
+    out: List[str] = []
+    c = result["counts"]
+    status = result["status"]
+    mark_fail = "❌" if status == "fail" else "⚠️"
+
+    if c.get("errors_in_diff", 0) > 0:
+        out.append(
+            f"- {mark_fail} **{c['errors_in_diff']}** new error-severity issue(s) "
+            f"(required = **0**)"
+        )
+    if c.get("secrets", 0) > 0:
+        out.append(
+            f"- {mark_fail} **{c['secrets']}** secret(s) in changed code "
+            f"(required = **0**)"
+        )
+    if c.get("complexity", 0) > 0:
+        for f in findings:
+            if f.get("category") != "complexity" or not f.get("in_pr_diff"):
+                continue
+            raw = f.get("raw") or {}
+            ccn = raw.get("ccn")
+            thr = raw.get("threshold", 15)
+            func = raw.get("function") or "function"
+            loc = f.get("path") or "—"
+            if f.get("start_line"):
+                loc = f"{loc}:{f['start_line']}"
+            if ccn is not None:
+                out.append(
+                    f"- {mark_fail} Complexity on `{loc}` — `{func}` is **{ccn}** "
+                    f"(required ≤ **{thr}**)"
+                )
+            else:
+                out.append(f"- {mark_fail} {f.get('message')}")
+    if c.get("duplication", 0) > 0:
+        out.append(
+            f"- {mark_fail} **{c['duplication']}** duplication block(s) on new code "
+            f"(required ≤ **0**)"
+        )
+    if c.get("coverage", 0) > 0 or any(
+        f.get("category") == "coverage" and f.get("rule_id") == "coverage_report_missing"
+        for f in findings
+    ):
+        missing = any(
+            f.get("rule_id") == "coverage_report_missing" for f in findings
+        )
+        if missing:
+            out.append(
+                "- ⚠️ Coverage on new code: **no report** "
+                "(required ≥ **80%** when tests emit lcov/cobertura/istanbul)"
+            )
+        else:
+            out.append(
+                f"- ⚠️ Coverage findings on changed files: **{c.get('coverage', 0)}** "
+                f"(required ≥ **80%**)"
+            )
+    # Fall back to gate reasons if nothing structured matched
+    if not out:
+        for r in result.get("fail_reasons") or []:
+            out.append(f"- {mark_fail} {r}")
+        for r in result.get("warn_reasons") or []:
+            out.append(f"- ⚠️ {r}")
+    return out
+
+
 def render_md(result: Dict[str, Any], findings: List[Dict[str, Any]]) -> str:
     status = result["status"]
     mode = result["mode"]
@@ -249,6 +315,19 @@ def render_md(result: Dict[str, Any], findings: List[Dict[str, Any]]) -> str:
         "",
         f"**Status:** `{status}` · **Mode:** `{mode}` · **Blocking:** `{'yes' if blocking else 'no'}`",
         "",
+    ]
+
+    conditions = _condition_lines(result, findings)
+    if conditions and status != "pass":
+        lines.append("#### Failed conditions")
+        lines.append("")
+        lines.extend(conditions)
+        lines.append("")
+    elif status == "pass":
+        lines.append("_All quality-gate conditions passed for this PR._")
+        lines.append("")
+
+    lines += [
         "| Metric | Count |",
         "|--------|------:|",
         f"| Findings (all) | {c['findings_total']} |",
@@ -261,36 +340,52 @@ def render_md(result: Dict[str, Any], findings: List[Dict[str, Any]]) -> str:
         f"| Engines | {', '.join(result.get('engines') or []) or '—'} |",
         "",
     ]
-    if result["fail_reasons"]:
-        label = "**Fail reasons:**" if blocking else "**Would fail (fail_if):**"
-        lines.append(label)
-        lines.extend(f"- {r}" for r in result["fail_reasons"])
-        lines.append("")
-    if result["warn_reasons"]:
-        lines.append("**Warnings:**")
-        lines.extend(f"- {r}" for r in result["warn_reasons"])
-        lines.append("")
 
     top = sorted(
         findings,
         key=lambda f: (not f.get("in_pr_diff"), f.get("severity") != "error"),
     )[:20]
-    if top:
+    lineable = [f for f in top if f.get("path") and f.get("start_line")]
+    summary_only = [f for f in top if not (f.get("path") and f.get("start_line"))]
+
+    if lineable:
         lines += [
-            "| Sev | Engine | File | Message |",
-            "|:---:|--------|------|---------|",
+            "#### Issues (open **Files changed** for line comments)",
+            "",
+            "| Sev | Where | What | How to fix |",
+            "|:---:|-------|------|------------|",
         ]
-        for f in top:
+        for f in lineable:
             sev = f.get("severity", "info")
-            loc = f.get("path") or "—"
-            if f.get("start_line"):
-                loc = f"{loc}:{f['start_line']}"
-            msg = (f.get("message") or "").replace("|", "\\|").replace("\n", " ")[:120]
+            loc = f"{f.get('path')}:{f['start_line']}"
+            msg = (f.get("message") or "").replace("|", "\\|").replace("\n", " ")[:140]
+            fix = (f.get("remediation") or "See inline comment.").replace("|", "\\|").replace(
+                "\n", " "
+            )[:160]
             badge = "🔴" if sev == "error" else ("🟡" if sev == "warning" else "ℹ️")
-            diff = " · PR" if f.get("in_pr_diff") else ""
-            lines.append(
-                f"| {badge} | `{f.get('engine')}` | `{loc}`{diff} | {msg} |"
-            )
+            lines.append(f"| {badge} | `{loc}` | {msg} | {fix} |")
+        lines.append("")
+
+    if summary_only:
+        lines += [
+            "#### Other findings",
+            "",
+        ]
+        for f in summary_only:
+            sev = f.get("severity", "info")
+            badge = "🔴" if sev == "error" else ("🟡" if sev == "warning" else "ℹ️")
+            msg = (f.get("message") or "").replace("\n", " ")
+            fix = f.get("remediation") or ""
+            lines.append(f"- {badge} **{f.get('engine')}** — {msg}")
+            if fix:
+                lines.append(f"  - 💡 {fix}")
+        lines.append("")
+
+    if lineable:
+        lines.append(
+            "_Peer-style review comments are posted on the exact lines in "
+            "**Files changed**._"
+        )
         lines.append("")
 
     lines.append(f"_{result.get('note', '')}_")

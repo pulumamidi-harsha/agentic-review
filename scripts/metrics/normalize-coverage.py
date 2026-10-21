@@ -186,7 +186,11 @@ def main() -> int:
                     "No coverage report found (lcov/cobertura/istanbul). "
                     "Run unit tests with coverage in checks to enable this gate."
                 ),
-                "remediation": "Ensure Pass 1 / checks emit coverage artifacts (e.g. lcov.info).",
+                "remediation": (
+                    "Run unit tests with coverage in this PR’s checks and publish "
+                    "an lcov.info / cobertura / istanbul report so the gate can "
+                    "measure coverage on new code (target ≥ 80%)."
+                ),
                 "in_pr_diff": True,
                 "fingerprint": "coverage:missing",
                 "raw": None,

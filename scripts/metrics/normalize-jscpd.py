@@ -73,10 +73,19 @@ def main() -> int:
                     + (f" also in `{other}`" if other and other != path else "")
                     + "."
                 ),
-                "remediation": "Extract shared helper or remove the duplicate before merge.",
+                "remediation": (
+                    "Extract the shared logic into one helper and call it from "
+                    "both places (or delete the copy). Keep a single source of "
+                    "truth so future fixes land once."
+                    + (f" Duplicate also appears in `{other}`." if other and other != path else "")
+                ),
                 "in_pr_diff": True,
                 "fingerprint": f"jscpd:{path}:{start_line}:{other}:{lines_count}",
-                "raw": None,
+                "raw": {
+                    "lines": lines_count,
+                    "other_path": other or None,
+                    "tokens": tokens,
+                },
             }
         )
 

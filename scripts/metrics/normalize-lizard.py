@@ -5,8 +5,59 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import sys
 from pathlib import Path
+
+
+LOC_RE = re.compile(r"@(\d+)-(\d+)@")
+
+
+def to_repo_path(raw: str, changed: set[str]) -> str:
+    """Normalize absolute or relative lizard paths to repo-relative."""
+    p = (raw or "").strip().lstrip("./")
+    if not p:
+        return ""
+    path = Path(p)
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        pass
+    # Match against PR changed files by suffix / basename
+    for c in changed:
+        if p.endswith(c) or c.endswith(p) or Path(c).name == path.name:
+            return c
+    return p
+
+
+def parse_lines(location: str, row: list[str]) -> tuple[int | None, int | None]:
+    """Lizard CSV: location is name@start-end@path; trailing cols may be start,end."""
+    m = LOC_RE.search(location or "")
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    if len(row) >= 11:
+        try:
+            return int(row[9]), int(row[10])
+        except ValueError:
+            pass
+    # Legacy: file:start-end or bare start-end
+    loc = location or ""
+    if ":" in loc and "@" not in loc:
+        loc = loc.rsplit(":", 1)[-1]
+    if re.fullmatch(r"\d+-\d+", loc or ""):
+        left, right = loc.split("-", 1)
+        return int(left), int(right)
+    return None, None
+
+
+def remediation(func: str, ccn: int, threshold: int) -> str:
+    return (
+        f"Refactor `{func}` so cyclomatic complexity is ≤ {threshold} "
+        f"(currently {ccn}). Prefer: (1) extract each major branch into a "
+        f"named helper, (2) replace deep nesting with early returns or a "
+        f"lookup/map, (3) keep each function doing one job. Add unit tests "
+        f"for the extracted helpers."
+    )
 
 
 def main() -> int:
@@ -19,7 +70,7 @@ def main() -> int:
         return 2
     raw_path, changed_path, out_path, threshold_s = sys.argv[1:5]
     threshold = int(threshold_s or 15)
-    changed = set()
+    changed: set[str] = set()
     if Path(changed_path).is_file():
         changed = {
             ln.strip().lstrip("./")
@@ -28,43 +79,32 @@ def main() -> int:
         }
 
     text = Path(raw_path).read_text(encoding="utf-8", errors="replace")
-    # Skip summary lines; keep CSV rows
-    rows = []
+    rows: list[dict] = []
     reader = csv.reader(io.StringIO(text))
     for row in reader:
         if len(row) < 8:
             continue
-        # Typical: NLOC,CCN,token,PARAM,length,location,file,function_name,...
-        # lizard --csv columns vary by version; detect file-like fields
+        # CSV: nloc,ccn,token,param,length,location,file,function,canonical[,start,end]
         try:
-            # Common format: nloc,ccn,token,param,length,location,file,function,canonical
             if row[0].lower() in {"nloc", "file"}:
                 continue
             nloc, ccn = int(float(row[0])), int(float(row[1]))
             location = row[5] if len(row) > 5 else ""
-            path = (row[6] if len(row) > 6 else "").lstrip("./")
+            path = to_repo_path(row[6] if len(row) > 6 else "", changed)
             func = row[7] if len(row) > 7 else "function"
         except (ValueError, IndexError):
             continue
         if not path:
             continue
-        if path not in changed and not any(path.endswith(c) or c.endswith(path) for c in changed):
-            # still allow if basename match in changed
+        if path not in changed and not any(
+            path.endswith(c) or c.endswith(path) for c in changed
+        ):
             base = Path(path).name
             if not any(Path(c).name == base for c in changed):
                 continue
         if ccn <= threshold:
             continue
-        # Parse start line from location "file:start-end" or "start-end"
-        start_line = None
-        loc = location or ""
-        if ":" in loc:
-            loc = loc.rsplit(":", 1)[-1]
-        if "-" in loc:
-            try:
-                start_line = int(loc.split("-", 1)[0])
-            except ValueError:
-                start_line = None
+        start_line, end_line = parse_lines(location, row)
         rows.append(
             {
                 "engine": "lizard",
@@ -73,15 +113,15 @@ def main() -> int:
                 "category": "complexity",
                 "path": path,
                 "start_line": start_line,
-                "end_line": None,
+                "end_line": end_line,
                 "message": (
                     f"Function `{func}` complexity is {ccn} "
                     f"(threshold {threshold}, NLOC {nloc})."
                 ),
-                "remediation": "Split into smaller functions before merge.",
+                "remediation": remediation(func, ccn, threshold),
                 "in_pr_diff": True,
                 "fingerprint": f"lizard:{path}:{func}:{ccn}",
-                "raw": None,
+                "raw": {"function": func, "ccn": ccn, "threshold": threshold, "nloc": nloc},
             }
         )
 
