@@ -1,0 +1,447 @@
+name: AI PR Review — Phase 1 (prepare + checks + security)
+
+on:
+  workflow_call:
+    inputs:
+      review_type:
+        description: 'Type of review: full, security, quick'
+        required: false
+        type: string
+        default: 'full'
+      custom_instructions:
+        description: 'Repository-specific instructions for the AI reviewer'
+        required: false
+        type: string
+        default: ''
+      pipeline_repository:
+        description: 'Repository containing pipeline scripts (org/repo)'
+        required: false
+        type: string
+        default: 'pulumamidi-harsha/agentic-review'
+      pipeline_ref:
+        description: 'Git ref for pipeline scripts'
+        required: false
+        type: string
+        default: 'main'
+      ai_model:
+        description: 'LLM model name'
+        required: false
+        type: string
+        default: 'gpt-4.1'
+      npm_registry_url:
+        description: 'Optional private npm registry URL'
+        required: false
+        type: string
+        default: 'https://artifactory.bayer.com/artifactory/api/npm/npm-platforms-engineering/'
+      npm_scopes:
+        description: 'Comma-separated npm scopes for private registry'
+        required: false
+        type: string
+        default: '@monsantoit,@element'
+    secrets:
+      AI_API_KEY:
+        required: true
+      AI_API_ENDPOINT:
+        required: true
+      ORG_PAT:
+        required: false
+      ARTIFACTORY_USERNAME:
+        required: false
+      ARTIFACTORY_AUTH_TOKEN:
+        required: false
+    outputs:
+      skip:
+        description: Whether phase1 was skipped
+        value: ${{ jobs.gate.outputs.skip }}
+      review_type:
+        value: ${{ jobs.prepare.outputs.review_type }}
+      pr_size:
+        value: ${{ jobs.prepare.outputs.pr_size }}
+      diff_lines:
+        value: ${{ jobs.prepare.outputs.diff_lines }}
+      changed_files:
+        value: ${{ jobs.prepare.outputs.changed_files }}
+      pr_scope:
+        value: ${{ jobs.prepare.outputs.pr_scope }}
+      checks_passed:
+        value: ${{ jobs.checks.outputs.passed }}
+      checks_failed:
+        value: ${{ jobs.checks.outputs.failed }}
+      checks_exit:
+        value: ${{ jobs.checks.outputs.exit_code }}
+      setup_failed:
+        value: ${{ jobs.checks.outputs.setup_failed }}
+      security_exit:
+        value: ${{ jobs.scans.outputs.security_exit }}
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  AGENTIC_TMP: /tmp/agentic-review
+  PIPELINE_DIR: /tmp/agentic-review-pipeline
+  REVIEW_TYPE: ${{ inputs.review_type }}
+  INPUT_REVIEW_TYPE: ${{ inputs.review_type }}
+  INPUT_CUSTOM_INSTRUCTIONS: ${{ inputs.custom_instructions }}
+  AI_MODEL: ${{ inputs.ai_model }}
+  NPM_REGISTRY_URL: ${{ inputs.npm_registry_url }}
+  NPM_SCOPES: ${{ inputs.npm_scopes }}
+  GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+  GITHUB_EVENT_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+  GITHUB_EVENT_PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  PR_TITLE: ${{ github.event.pull_request.title }}
+  PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+
+jobs:
+  gate:
+    name: Check skip label
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.skip_check.outputs.skip }}
+    steps:
+      - id: skip_check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.pull_request?.labels?.map(l => l.name) || [];
+            const skip = labels.includes('skip-ai-review') || labels.includes('no-review');
+            if (skip) core.info('Skipping AI review — PR has skip label');
+            core.setOutput('skip', skip.toString());
+
+  prepare:
+    name: Prepare context and AI Pass 1
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_type: ${{ steps.config.outputs.review_type }}
+      skip_docker: ${{ steps.config.outputs.skip_docker }}
+      skip_security: ${{ steps.config.outputs.skip_security }}
+      skip_checks: ${{ steps.config.outputs.skip_checks }}
+      max_diff_lines: ${{ steps.config.outputs.max_diff_lines }}
+      pr_size: ${{ steps.context.outputs.pr_size }}
+      diff_lines: ${{ steps.context.outputs.diff_lines }}
+      changed_files: ${{ steps.context.outputs.changed_files }}
+      pr_scope: ${{ steps.context.outputs.pr_scope }}
+      has_dockerfile: ${{ steps.context.outputs.has_dockerfile }}
+      node_version: ${{ steps.pass1.outputs.node_version }}
+      python_version: ${{ steps.pass1.outputs.python_version }}
+      go_version: ${{ steps.pass1.outputs.go_version }}
+      ruby_version: ${{ steps.pass1.outputs.ruby_version }}
+      java_version: ${{ steps.pass1.outputs.java_version }}
+      dotnet_version: ${{ steps.pass1.outputs.dotnet_version }}
+      php_version: ${{ steps.pass1.outputs.php_version }}
+      elixir_version: ${{ steps.pass1.outputs.elixir_version }}
+      terraform_version: ${{ steps.pass1.outputs.terraform_version }}
+    steps:
+      - name: Checkout PR repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone pipeline scripts
+        env:
+          PIPELINE_TOKEN: ${{ secrets.ORG_PAT || github.token }}
+          PIPELINE_REPO: ${{ inputs.pipeline_repository }}
+          PIPELINE_REF: ${{ inputs.pipeline_ref }}
+        run: |
+          rm -rf "$PIPELINE_DIR"
+          git clone "https://x-access-token:${PIPELINE_TOKEN}@github.com/${PIPELINE_REPO}.git" "$PIPELINE_DIR"
+          git -C "$PIPELINE_DIR" checkout "$PIPELINE_REF"
+
+      - name: Start review timer
+        id: timer
+        run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Load repo configuration
+        id: config
+        run: bash "$PIPELINE_DIR/scripts/load-config.sh"
+
+      - name: Validate custom instructions
+        run: bash "$PIPELINE_DIR/scripts/validate-payload.sh"
+
+      - name: Gather repository context
+        id: context
+        env:
+          MAX_DIFF_LINES: ${{ steps.config.outputs.max_diff_lines }}
+        run: bash "$PIPELINE_DIR/scripts/gather-context.sh"
+
+      - name: AI Pass 1 — detect stack and commands
+        id: pass1
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+          MAX_DIFF_LINES: ${{ steps.config.outputs.max_diff_lines }}
+          PR_SIZE: ${{ steps.context.outputs.pr_size }}
+          DIFF_LINES: ${{ steps.context.outputs.diff_lines }}
+          CHANGED_FILES: ${{ steps.context.outputs.changed_files }}
+        run: bash "$PIPELINE_DIR/scripts/ai-pass1.sh"
+
+      - name: Save timer for duration
+        run: echo "${{ steps.timer.outputs.start }}" > ${{ runner.temp }}/timer.txt
+
+      - name: Upload prepare artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-prepare
+          path: ${{ env.AGENTIC_TMP }}/
+          retention-days: 1
+
+      - name: Upload timer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-timer
+          path: ${{ runner.temp }}/timer.txt
+          retention-days: 1
+
+  checks:
+    name: Quality checks and dependency audit
+    needs: [gate, prepare]
+    if: needs.gate.outputs.skip != 'true' && needs.prepare.outputs.skip_checks != 'true' && needs.prepare.outputs.review_type != 'security'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      passed: ${{ steps.run_checks.outputs.passed }}
+      failed: ${{ steps.run_checks.outputs.failed }}
+      exit_code: ${{ steps.run_checks.outputs.exit_code }}
+      setup_failed: ${{ steps.run_checks.outputs.setup_failed }}
+    steps:
+      - name: Checkout PR repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone pipeline scripts
+        env:
+          PIPELINE_TOKEN: ${{ secrets.ORG_PAT || github.token }}
+          PIPELINE_REPO: ${{ inputs.pipeline_repository }}
+          PIPELINE_REF: ${{ inputs.pipeline_ref }}
+        run: |
+          rm -rf "$PIPELINE_DIR"
+          git clone "https://x-access-token:${PIPELINE_TOKEN}@github.com/${PIPELINE_REPO}.git" "$PIPELINE_DIR"
+          git -C "$PIPELINE_DIR" checkout "$PIPELINE_REF"
+
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: agentic-prepare
+          path: ${{ env.AGENTIC_TMP }}
+
+      # No setup-node dependency cache — cache requires npm/yarn lockfiles and breaks pnpm-only repos.
+      # Pass 1 setup_commands install deps (pnpm install, npm ci, etc.) in run-checks.sh.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        if: needs.prepare.outputs.node_version != ''
+        with:
+          node-version: ${{ needs.prepare.outputs.node_version }}
+
+      - name: Install package manager
+        if: needs.prepare.outputs.node_version != ''
+        run: |
+          set +e
+          PKG_MGR=$(jq -r '.stack.package_manager // empty' "${AGENTIC_TMP}/ai-commands.json")
+          PKG_MGR_VER=$(jq -r '.stack.package_manager_version // empty' "${AGENTIC_TMP}/ai-commands.json")
+          PKG_MGR_FIELD=$(jq -r '.packageManager // empty' package.json 2>/dev/null)
+          set -e
+          case "$PKG_MGR" in
+            pnpm)
+              VER="9"
+              if [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == pnpm@* ]]; then
+                VER="${PKG_MGR_FIELD#pnpm@}"
+                VER="${VER%%+*}"
+              fi
+              if [[ -n "$PKG_MGR_VER" && "$PKG_MGR_VER" != "null" ]]; then
+                VER="$PKG_MGR_VER"
+              fi
+              echo "Installing pnpm@${VER}"
+              npm install -g "pnpm@${VER}"
+              ;;
+            yarn)
+              VER="4"
+              if [[ -n "$PKG_MGR_FIELD" && "$PKG_MGR_FIELD" == yarn@* ]]; then
+                VER="${PKG_MGR_FIELD#yarn@}"
+                VER="${VER%%+*}"
+              fi
+              echo "Activating yarn@${VER} via corepack"
+              corepack enable && corepack prepare "yarn@${VER}" --activate
+              ;;
+            *)
+              echo "No extra package manager install needed (PKG_MGR='${PKG_MGR:-none}')"
+              ;;
+          esac
+
+      - name: Configure private registry
+        if: needs.prepare.outputs.node_version != ''
+        env:
+          ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+        run: bash "$PIPELINE_DIR/scripts/configure-npm-registry.sh"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        if: needs.prepare.outputs.python_version != ''
+        with:
+          python-version: ${{ needs.prepare.outputs.python_version }}
+          # cache: pip intentionally omitted — dependency install happens dynamically
+          # via setup_commands (we don't know the requirements file path at this point),
+          # so setup-python's post-job cleanup would log a misleading
+          # "Error: Cache folder path ... doesn't exist on disk" on every run.
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        if: needs.prepare.outputs.go_version != '' && hashFiles('go.sum') != ''
+        with:
+          go-version: ${{ needs.prepare.outputs.go_version }}
+          cache-dependency-path: go.sum
+
+      - name: Setup Go (no cache)
+        uses: actions/setup-go@v5
+        if: needs.prepare.outputs.go_version != '' && hashFiles('go.sum') == ''
+        with:
+          go-version: ${{ needs.prepare.outputs.go_version }}
+          cache: false
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        if: needs.prepare.outputs.ruby_version != ''
+        with:
+          ruby-version: ${{ needs.prepare.outputs.ruby_version }}
+          bundler-cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        if: needs.prepare.outputs.java_version != ''
+        with:
+          distribution: temurin
+          java-version: ${{ needs.prepare.outputs.java_version }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        if: needs.prepare.outputs.dotnet_version != ''
+        with:
+          dotnet-version: ${{ needs.prepare.outputs.dotnet_version }}
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        if: needs.prepare.outputs.php_version != ''
+        with:
+          php-version: ${{ needs.prepare.outputs.php_version }}
+          tools: composer
+
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        if: needs.prepare.outputs.elixir_version != ''
+        with:
+          elixir-version: ${{ needs.prepare.outputs.elixir_version }}
+          otp-version: '26'
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        if: needs.prepare.outputs.terraform_version != ''
+        with:
+          terraform_version: ${{ needs.prepare.outputs.terraform_version }}
+
+      - name: Run quality checks
+        id: run_checks
+        continue-on-error: true
+        env:
+          ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+          ARTIFACTORY_USER_NAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_USER_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+          PIP_NO_INPUT: "1"
+          # Agentic self-healing: ai-fix-setup.sh consults the model when a
+          # setup_command fails. Needs the same LLM credentials as Pass 1/2.
+          AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+        run: bash "$PIPELINE_DIR/scripts/run-checks.sh"
+
+      - name: Dependency audit
+        if: needs.prepare.outputs.review_type != 'quick'
+        continue-on-error: true
+        env:
+          ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_AUTH_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+          ARTIFACTORY_USER_NAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+          ARTIFACTORY_USER_TOKEN: ${{ secrets.ARTIFACTORY_AUTH_TOKEN }}
+          PIP_NO_INPUT: "1"
+        run: bash "$PIPELINE_DIR/scripts/run-dep-audit.sh"
+
+      - name: Collect coverage reports for quality-gate
+        if: always()
+        continue-on-error: true
+        run: bash "$PIPELINE_DIR/scripts/collect-coverage-reports.sh"
+
+      - name: Upload coverage artifact (for PR Quality Gate)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-coverage
+          path: |
+            ${{ env.AGENTIC_TMP }}/coverage-reports/
+            ${{ env.AGENTIC_TMP }}/coverage-collect.json
+          retention-days: 3
+          if-no-files-found: warn
+
+      - name: Upload checks artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-checks
+          path: ${{ env.AGENTIC_TMP }}/
+          retention-days: 1
+
+  scans:
+    name: Security and hygiene scans
+    needs: [gate, prepare]
+    if: needs.gate.outputs.skip != 'true' && needs.prepare.outputs.skip_security != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      security_exit: ${{ steps.security.outputs.security_exit }}
+    steps:
+      - name: Checkout PR repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone pipeline scripts
+        env:
+          PIPELINE_TOKEN: ${{ secrets.ORG_PAT || github.token }}
+          PIPELINE_REPO: ${{ inputs.pipeline_repository }}
+          PIPELINE_REF: ${{ inputs.pipeline_ref }}
+        run: |
+          rm -rf "$PIPELINE_DIR"
+          git clone "https://x-access-token:${PIPELINE_TOKEN}@github.com/${PIPELINE_REPO}.git" "$PIPELINE_DIR"
+          git -C "$PIPELINE_DIR" checkout "$PIPELINE_REF"
+
+      - name: Download prepare artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: agentic-prepare
+          path: ${{ env.AGENTIC_TMP }}
+
+      - name: Run security scans
+        id: security
+        continue-on-error: true
+        run: bash "$PIPELINE_DIR/scripts/run-security.sh"
+
+      - name: Dependency audit (security mode)
+        if: needs.prepare.outputs.review_type == 'security'
+        continue-on-error: true
+        run: bash "$PIPELINE_DIR/scripts/run-dep-audit.sh"
+
+      - name: Upload security artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-scans
+          path: ${{ env.AGENTIC_TMP }}/
+          retention-days: 1
+

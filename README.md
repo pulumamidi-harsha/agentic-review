@@ -39,12 +39,16 @@ jobs:
 
 For Sonar replacement, add a **second** workflow that calls `agentic-quality-gate` (see that repo’s README).
 
-## What this hub does
+## What this hub does (Phase 1)
 
 1. Reads repo + PR diff  
 2. AI Pass 1 plans lint/test commands  
-3. Runs checks / Gitleaks / Docker·Trivy (etc.) in parallel  
-4. AI Pass 2 verdict on **changed files**  
-5. Posts **🤖 AI Code Review** comment + labels  
+3. Runs checks + security/hygiene in parallel (Docker optional / off in phase1)  
+4. Collects coverage reports → artifact `agentic-coverage`  
+
+**Pass 2 (LLM comment/labels) lives in [`agentic-verdict`](https://github.com/pulumamidi-harsha/agentic-verdict).**  
+**Sonar-style gate lives in [`agentic-quality-gate`](https://github.com/pulumamidi-harsha/agentic-quality-gate).**
+
+Orchestrated caller (all three): [`examples/caller-orchestrated.yml`](examples/caller-orchestrated.yml).
 
 **No Semgrep quality-gate package here.**
