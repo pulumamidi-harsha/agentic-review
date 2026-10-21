@@ -388,6 +388,8 @@ jobs:
           path: |
             ${{ env.AGENTIC_TMP }}/coverage-reports/
             ${{ env.AGENTIC_TMP }}/coverage-collect.json
+            ${{ env.AGENTIC_TMP }}/lcov.info
+            ${{ env.AGENTIC_TMP }}/coverage-final.json
           retention-days: 3
           if-no-files-found: warn
 

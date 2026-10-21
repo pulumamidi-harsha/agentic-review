@@ -8,15 +8,33 @@ mkdir -p "$OUT_DIR"
 
 agentic_log "┌─ collect coverage reports (for quality-gate) ─┐"
 
+# Also publish canonical names the quality-gate staging + normalize scripts expect
+# (numbered copies alone become 0-coverage-final.json and were previously missed).
+stage_canonical() {
+  local src="$1" base="$2"
+  case "$base" in
+    lcov.info)
+      cp "$src" "${OUT_DIR}/lcov.info"
+      cp "$src" "${AGENTIC_TMP}/lcov.info"
+      ;;
+    coverage-final.json)
+      cp "$src" "${OUT_DIR}/coverage-final.json"
+      cp "$src" "${AGENTIC_TMP}/coverage-final.json"
+      ;;
+    cobertura-coverage.xml|coverage.xml)
+      cp "$src" "${OUT_DIR}/${base}"
+      cp "$src" "${AGENTIC_TMP}/${base}"
+      ;;
+  esac
+}
+
 FOUND=0
 while IFS= read -r f; do
   [[ -z "$f" || ! -f "$f" ]] && continue
   base="$(basename "$f")"
   dest="${OUT_DIR}/${FOUND}-${base}"
   cp "$f" "$dest"
-  if [[ "$base" == "lcov.info" && ! -f "${OUT_DIR}/lcov.info" ]]; then
-    cp "$f" "${OUT_DIR}/lcov.info"
-  fi
+  stage_canonical "$f" "$base"
   agentic_log "  + $f"
   FOUND=$((FOUND + 1))
 done < <(
@@ -25,6 +43,7 @@ done < <(
     \( -name 'lcov.info' -o -name 'coverage-final.json' -o -name 'cobertura-coverage.xml' -o -name 'coverage.xml' \) \
     -not -path '*/node_modules/*' \
     -not -path '*/.git/*' \
+    -not -path '*/coverage-reports/*' \
     2>/dev/null | head -40
 )
 
