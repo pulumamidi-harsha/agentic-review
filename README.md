@@ -2,6 +2,11 @@
 
 **A centralized GitHub Actions workflow that reviews pull requests with AI.**
 
+> **Two hubs (roll out independently):**  
+> - **This repo (`agentic-review`)** — AI PR review (Pass 1/2, checks, security scans).  
+> - **[`agentic-quality-gate`](https://github.com/pulumamidi-harsha/agentic-quality-gate)** — Sonar replacement (Semgrep hotspots, complexity, duplication, coverage, peer line comments). **No AI.**  
+> Call either or both from consumer repos with separate thin workflows.
+
 Your repo adds a small caller workflow. When someone opens or updates a PR, this pipeline:
 
 1. **Reads** the repository (configs, diff, Terraform layout)
@@ -43,9 +48,11 @@ Your repo adds a small caller workflow. When someone opens or updates a PR, this
 
 **Design choice:** There is no `if language == "python"` in the workflow. Pass 1 is the “brain” for stack detection; bash scripts are the “hands” that run what Pass 1 planned.
 
-### Phase 1 — Hub quality gate (advisory)
+### Phase 1 — Quality gate (prefer dedicated hub)
 
-In addition to the AI review, a **metrics** job runs Semgrep, normalizes results into [`schemas/finding.schema.json`](schemas/finding.schema.json), and evaluates [`config/quality-gate.yml`](config/quality-gate.yml).
+For **Sonar replacement only**, use [`agentic-quality-gate`](https://github.com/pulumamidi-harsha/agentic-quality-gate) so rollout stays isolated from AI.
+
+This repo still embeds a **metrics** job (Semgrep → [`schemas/finding.schema.json`](schemas/finding.schema.json) → [`config/quality-gate.yml`](config/quality-gate.yml)) when you call the full AI workflow. Prefer the dedicated hub when you want gate-only.
 
 | Behavior | Detail |
 |----------|--------|
