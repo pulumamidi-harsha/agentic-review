@@ -43,7 +43,8 @@ PACKS = {
     "rust": ["p/rust"],
     "terraform": ["p/terraform"],
     "docker": ["p/docker"],
-    "yaml": ["p/yaml"],
+    # p/yaml 404s on semgrep.dev — workflow rules come from p/github-actions (always_packs)
+    "yaml": [],
     "bash": ["p/bash"],
 }
 
