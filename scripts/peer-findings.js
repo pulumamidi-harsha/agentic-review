@@ -29,6 +29,21 @@ function titleFor(finding) {
   if (rid.includes('regexp') || rid.includes('redos')) {
     return 'Security hotspot — non-literal RegExp (ReDoS risk)';
   }
+  if (rid.includes('hardcoded-secret') || rid.includes('secret')) {
+    return 'Security hotspot — hardcoded secret';
+  }
+  if (rid.includes('xss') || rid.includes('innerhtml') || rid.includes('dangerously-set')) {
+    return 'Security hotspot — XSS (unsafe HTML)';
+  }
+  if (rid.includes('command-injection')) {
+    return 'Security hotspot — command injection';
+  }
+  if (rid.includes('insecure-hash')) {
+    return 'Security hotspot — weak cryptographic hash';
+  }
+  if (rid.includes('document-write')) {
+    return 'Security hotspot — document.write (XSS risk)';
+  }
   const titles = {
     complexity: 'High complexity — please refactor',
     duplication: 'Duplicated code — extract a shared helper',
@@ -57,6 +72,18 @@ function whyItMatters(finding) {
       'A crafted pattern can hang the event loop (ReDoS). If the pattern comes from ' +
       'users or external data, treat it as untrusted input.'
     );
+  }
+  if (rid.includes('hardcoded-secret') || (finding.category === 'secret')) {
+    return 'Credentials in source leak via git history, forks, and CI logs — treat as already compromised.';
+  }
+  if (rid.includes('xss') || rid.includes('innerhtml') || rid.includes('dangerously-set') || rid.includes('document-write')) {
+    return 'Untrusted HTML in the browser can steal sessions, rewrite the UI, or run attacker scripts (XSS).';
+  }
+  if (rid.includes('command-injection')) {
+    return 'A crafted string can run arbitrary OS commands on the server (RCE).';
+  }
+  if (rid.includes('insecure-hash')) {
+    return 'MD5/SHA-1 are too weak for passwords or security tokens — attackers can crack or collide them.';
   }
   switch (finding.category) {
     case 'complexity':
@@ -175,6 +202,101 @@ function fixExamples(finding) {
     };
   }
 
+  if (rid.includes('hardcoded-secret') || (finding.category === 'secret' && rid.includes('secret'))) {
+    return {
+      intro: 'Never commit real credentials. Load them at runtime.',
+      options: [
+        {
+          title: 'Use environment variables',
+          before: 'export const PILOT_API_KEY = "sk-live-……";',
+          after:
+            'export const PILOT_API_KEY = process.env.PILOT_API_KEY;\n' +
+            'if (!PILOT_API_KEY) throw new Error("PILOT_API_KEY is not configured");',
+        },
+      ],
+      dont: 'Do not leave placeholder “real-looking” keys in the repo — scanners and attackers treat them as live.',
+      lang,
+    };
+  }
+
+  if (rid.includes('xss') || rid.includes('innerhtml') || rid.includes('dangerously-set')) {
+    return {
+      intro: 'Do not inject unsanitized HTML into the DOM.',
+      options: [
+        {
+          title: 'Prefer textContent',
+          before: 'el.innerHTML = userInput;',
+          after: 'el.textContent = userInput;',
+        },
+        {
+          title: 'If HTML is required — sanitize first',
+          before: '<div dangerouslySetInnerHTML={{ __html: html }} />',
+          after:
+            "import DOMPurify from 'dompurify';\n" +
+            'const safe = DOMPurify.sanitize(html);\n' +
+            '<div dangerouslySetInnerHTML={{ __html: safe }} />',
+        },
+      ],
+      dont: 'Never concatenate request/query/AI output into HTML strings.',
+      lang,
+    };
+  }
+
+  if (rid.includes('command-injection')) {
+    return {
+      intro: 'Do not build a shell command string from untrusted input.',
+      options: [
+        {
+          title: 'Use execFile / spawn with an args array',
+          before: "import { exec } from 'child_process';\nexec(`ls ${userPath}`);",
+          after:
+            "import { execFile } from 'child_process';\n" +
+            "execFile('ls', ['-la', userPath], (err, stdout) => { /* … */ });",
+        },
+      ],
+      dont: 'Never pass user input into `exec` / `execSync` as a single shell string.',
+      lang,
+    };
+  }
+
+  if (rid.includes('insecure-hash')) {
+    return {
+      intro: 'Upgrade the hash algorithm for anything security-sensitive.',
+      options: [
+        {
+          title: 'Integrity / fingerprints',
+          before: "crypto.createHash('md5').update(data).digest('hex')",
+          after: "crypto.createHash('sha256').update(data).digest('hex')",
+        },
+        {
+          title: 'Passwords',
+          before: "createHash('sha1').update(password).digest('hex')",
+          after: "await bcrypt.hash(password, 12)  // or argon2 / scrypt",
+        },
+      ],
+      dont: 'Do not use MD5/SHA-1 for passwords or auth tokens.',
+      lang,
+    };
+  }
+
+  if (rid.includes('document-write')) {
+    return {
+      intro: 'Replace document.write with safe DOM APIs.',
+      options: [
+        {
+          title: 'createElement + textContent',
+          before: 'document.write(userHtml);',
+          after:
+            "const el = document.createElement('div');\n" +
+            'el.textContent = userHtml;\n' +
+            'document.body.appendChild(el);',
+        },
+      ],
+      dont: 'Never pass untrusted strings to document.write / writeln.',
+      lang,
+    };
+  }
+
   if (finding.category === 'complexity') {
     const fn = (finding.raw && finding.raw.function) || 'thisFunction';
     const thr = (finding.raw && finding.raw.threshold) || 15;
@@ -269,6 +391,34 @@ function formatSteps(finding) {
       '1. Prefer a literal RegExp (`/pattern/`) when possible',
       '2. If dynamic patterns are required, allow-list known kinds only',
       '3. Bound pattern length and reject nested quantifiers from untrusted input',
+    ];
+  }
+  if (rid.includes('hardcoded-secret') || finding.category === 'secret') {
+    return [
+      '1. Remove the hardcoded value from source',
+      '2. Load it from env / a secret manager at runtime',
+      '3. Rotate the credential if it was ever real',
+    ];
+  }
+  if (rid.includes('xss') || rid.includes('innerhtml') || rid.includes('dangerously-set') || rid.includes('document-write')) {
+    return [
+      '1. Prefer `textContent` / React children for plain text',
+      '2. If HTML is required, sanitize with DOMPurify (or equivalent)',
+      '3. Block user/request input from reaching raw HTML sinks',
+    ];
+  }
+  if (rid.includes('command-injection')) {
+    return [
+      '1. Replace `exec(string)` with `execFile` / `spawn` + args array',
+      '2. Allow-list the binary and validate every argument',
+      '3. Never build a shell string from user/AI input',
+    ];
+  }
+  if (rid.includes('insecure-hash')) {
+    return [
+      '1. Use SHA-256+ for integrity hashes',
+      '2. Use bcrypt / scrypt / argon2 for passwords',
+      '3. Re-hash stored values if this was used for auth',
     ];
   }
   if (finding.category === 'complexity') {

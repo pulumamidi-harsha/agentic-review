@@ -19,7 +19,17 @@ def map_severity(raw: str | None) -> str:
 
 def map_category(rule_id: str, metadata: dict[str, Any] | None = None) -> str:
     rid = rule_id.lower()
-    if any(k in rid for k in ("secret", "credential", "password", "api-key", "api.key")):
+    if any(
+        k in rid
+        for k in (
+            "secret",
+            "hardcoded-secret",
+            "credential",
+            "password",
+            "api-key",
+            "api.key",
+        )
+    ):
         return "secret"
     meta_cat = str((metadata or {}).get("category") or "").lower()
     if meta_cat == "security":
