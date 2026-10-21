@@ -450,97 +450,10 @@ jobs:
           path: ${{ env.AGENTIC_TMP }}/
           retention-days: 1
 
-  # Quality gate package (config/packages/*) — Semgrep/Actions/dup/complexity/coverage.
-  # No SonarQube. Mode via quality-gate.yml or AGENTIC_GATE_MODE.
-  metrics:
-    name: Metrics and quality gate
-    needs: [gate, prepare, checks]
-    if: always() && needs.gate.outputs.skip != 'true' && needs.prepare.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    outputs:
-      gate_status: ${{ steps.metrics.outputs.gate_status }}
-      gate_mode: ${{ steps.metrics.outputs.gate_mode }}
-      gate_blocking: ${{ steps.metrics.outputs.gate_blocking }}
-    steps:
-      - name: Checkout PR repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Clone pipeline scripts
-        env:
-          PIPELINE_TOKEN: ${{ secrets.ORG_PAT || github.token }}
-          PIPELINE_REPO: ${{ inputs.pipeline_repository }}
-          PIPELINE_REF: ${{ inputs.pipeline_ref }}
-        run: |
-          rm -rf "$PIPELINE_DIR"
-          git clone "https://x-access-token:${PIPELINE_TOKEN}@github.com/${PIPELINE_REPO}.git" "$PIPELINE_DIR"
-          git -C "$PIPELINE_DIR" checkout "$PIPELINE_REF"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Set up Node (jscpd)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      # Pass 1 stack hints (monorepo) when prepare succeeded
-      - name: Download prepare artifacts
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: agentic-prepare
-          path: ${{ env.AGENTIC_TMP }}
-
-      # Coverage reports from unit-test job (lcov / cobertura / istanbul)
-      - name: Download checks artifacts (coverage)
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: agentic-checks
-          path: ${{ env.AGENTIC_TMP }}
-
-      - name: Run quality-gate package
-        id: metrics
-        env:
-          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          GITHUB_EVENT_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
-          GITHUB_EVENT_PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          # Optional override without forking hub YAML: advisory | soft_fail | hard_fail
-          AGENTIC_GATE_MODE: ${{ vars.AGENTIC_GATE_MODE }}
-          COVERAGE_THRESHOLD_PCT: "80"
-          LIZARD_COMPLEXITY_THRESHOLD: "15"
-        run: |
-          mkdir -p "${AGENTIC_TMP}"
-          bash "$PIPELINE_DIR/scripts/run-metrics.sh"
-
-      - name: Upload metrics artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agentic-metrics
-          path: |
-            ${{ env.AGENTIC_TMP }}/findings.json
-            ${{ env.AGENTIC_TMP }}/gate-result.json
-            ${{ env.AGENTIC_TMP }}/quality-gate.md
-            ${{ env.AGENTIC_TMP }}/semgrep-findings.json
-            ${{ env.AGENTIC_TMP }}/jscpd-findings.json
-            ${{ env.AGENTIC_TMP }}/lizard-findings.json
-            ${{ env.AGENTIC_TMP }}/coverage-findings.json
-            ${{ env.AGENTIC_TMP }}/metrics-languages.json
-            ${{ env.AGENTIC_TMP }}/semgrep-configs.json
-            ${{ env.AGENTIC_TMP }}/pr-changed-files.txt
-          retention-days: 14
-          if-no-files-found: warn
 
   finalize:
     name: AI review and publish
-    needs: [gate, prepare, checks, scans, docker, metrics]
+    needs: [gate, prepare, checks, scans, docker]
     if: always() && needs.gate.outputs.skip != 'true' && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -580,13 +493,6 @@ jobs:
         continue-on-error: true
         with:
           name: agentic-docker
-          path: ${{ env.AGENTIC_TMP }}
-
-      - name: Download metrics artifacts
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: agentic-metrics
           path: ${{ env.AGENTIC_TMP }}
 
       - name: Download timer artifact
@@ -642,13 +548,7 @@ jobs:
           script: |
             const path = require('path');
             const modPath = path.join(process.env.PIPELINE_DIR || '/tmp/agentic-review-pipeline', 'scripts', 'post-review.js');
-            const {
-              body,
-              reviewData,
-              COMMENT_MARKER,
-              FINDING_MARKER,
-              inlineComments = [],
-            } = require(modPath);
+            const { body, reviewData, COMMENT_MARKER } = require(modPath);
 
             const isAiComment = (c) => {
               const login = c.user?.login || '';
@@ -720,121 +620,24 @@ jobs:
               }
             } catch (e) { console.log('list reviews:', e.message); }
 
-            // Dismiss stale peer finding comments from prior runs (Sonar-style refresh).
-            const findingMarker = FINDING_MARKER || '<!-- agentic-review:finding -->';
-            try {
-              let reviewComments = [];
-              for (let page = 1; page <= 20; page++) {
-                const { data } = await github.rest.pulls.listReviewComments({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: context.issue.number,
-                  per_page: 100,
-                  page
-                });
-                reviewComments = reviewComments.concat(data);
-                if (data.length < 100) break;
-              }
-              const stale = reviewComments.filter(c => {
-                const login = c.user?.login || '';
-                const bot = c.user?.type === 'Bot' || login === 'github-actions[bot]' || login.startsWith('github-actions');
-                return bot && c.body && c.body.includes(findingMarker);
-              });
-              for (const c of stale) {
-                await github.rest.pulls.deleteReviewComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: c.id
-                }).catch(e => console.log('delete finding comment:', e.message));
-              }
-              if (stale.length) core.info(`Removed ${stale.length} stale finding comment(s)`);
-            } catch (e) {
-              console.log('list/delete finding comments:', e.message);
-            }
-
-            // Peer-style inline comments on exact lines + verdict review event.
-            const headSha =
-              context.payload.pull_request?.head?.sha ||
-              context.payload.pull_request?.head?.ref ||
-              undefined;
-            const reviewNote = inlineComments.length
-              ? `_Quality findings posted as **${inlineComments.length}** line comment(s) on **Files changed**. Full summary is in the **🤖 AI Code Review** comment._`
-              : '_See the **🤖 AI Code Review** comment (updated each run) for details._';
-
-            const reviewEvent =
-              verdict === 'approve' ? 'APPROVE'
-                : (verdict === 'reject' || verdict === 'needs_work') ? 'REQUEST_CHANGES'
-                  : 'COMMENT';
-
-            const postReview = async (event, comments) => {
-              const payload = {
+            // AI verdict only — quality-gate / Sonar-replacement lives in agentic-quality-gate
+            const reviewNote = '_See the **🤖 AI Code Review** comment (updated each run) for details._';
+            if (verdict === 'approve') {
+              await github.rest.pulls.createReview({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: context.issue.number,
-                event,
-                body: reviewNote,
-              };
-              if (headSha) payload.commit_id = headSha;
-              if (comments && comments.length) payload.comments = comments;
-              return github.rest.pulls.createReview(payload);
-            };
-
-            if (inlineComments.length) {
-              try {
-                await postReview(reviewEvent === 'APPROVE' ? 'COMMENT' : reviewEvent, inlineComments);
-                core.info(`Posted ${inlineComments.length} inline finding comment(s)`);
-                // Separate APPROVE so line comments are not blocked by approve+comments rules
-                if (reviewEvent === 'APPROVE') {
-                  await postReview('APPROVE', null).catch(e => console.log('approve:', e.message));
-                }
-              } catch (e) {
-                console.log('inline review failed, retrying per-comment:', e.message);
-                // Fall back: post each comment individually (lines outside hunks are skipped)
-                let posted = 0;
-                for (const c of inlineComments) {
-                  try {
-                    await github.rest.pulls.createReviewComment({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      pull_number: context.issue.number,
-                      commit_id: headSha,
-                      path: c.path,
-                      line: c.line,
-                      side: c.side || 'RIGHT',
-                      start_line: c.start_line,
-                      start_side: c.start_side,
-                      body: c.body
-                    });
-                    posted++;
-                  } catch (err) {
-                    // Retry without multi-line span
-                    try {
-                      await github.rest.pulls.createReviewComment({
-                        owner: context.repo.owner,
-                        repo: context.repo.repo,
-                        pull_number: context.issue.number,
-                        commit_id: headSha,
-                        path: c.path,
-                        line: c.start_line || c.line,
-                        side: 'RIGHT',
-                        body: c.body
-                      });
-                      posted++;
-                    } catch (err2) {
-                      console.log(`skip comment ${c.path}:${c.line}:`, err2.message);
-                    }
-                  }
-                }
-                core.info(`Posted ${posted}/${inlineComments.length} finding comment(s) via fallback`);
-                if (reviewEvent === 'APPROVE' || reviewEvent === 'REQUEST_CHANGES') {
-                  await postReview(reviewEvent, null).catch(err => console.log('verdict review:', err.message));
-                }
-              }
-            } else if (reviewEvent === 'APPROVE' || reviewEvent === 'REQUEST_CHANGES') {
-              await postReview(reviewEvent, null).catch(e => console.log('verdict review:', e.message));
-            } else {
-              // Still leave a COMMENT review when gate failed but AI had no verdict event
-              // (keeps timeline consistent). Summary lives in the issue comment.
+                event: 'APPROVE',
+                body: reviewNote
+              }).catch(e => console.log('approve:', e.message));
+            } else if (verdict === 'reject' || verdict === 'needs_work') {
+              await github.rest.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                event: 'REQUEST_CHANGES',
+                body: reviewNote
+              }).catch(e => console.log('request changes:', e.message));
             }
 
             // PR list labels (like dependabot labels) — visible before opening the PR
