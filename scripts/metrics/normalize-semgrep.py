@@ -17,26 +17,48 @@ def map_severity(raw: str | None) -> str:
     return "info"
 
 
-def map_category(rule_id: str) -> str:
+def map_category(rule_id: str, metadata: dict[str, Any] | None = None) -> str:
     rid = rule_id.lower()
     if any(k in rid for k in ("secret", "credential", "password", "api-key", "api.key")):
         return "secret"
+    meta_cat = str((metadata or {}).get("category") or "").lower()
+    if meta_cat == "security":
+        return "security"
     if any(
         k in rid
         for k in (
             "security",
             "vuln",
             "injection",
+            "eval",
+            "rce",
             "xss",
             "sqli",
             "crypto",
             "github-actions",
             "gha.",
             "unpinned",
+            "regexp",
+            "redos",
         )
     ):
         return "security"
     return "bug"
+
+
+def default_remediation(rule_id: str, message: str) -> str:
+    rid = rule_id.lower()
+    if "eval" in rid or "function(...)" in message.lower():
+        return (
+            "(1) Remove eval / new Function (2) use JSON.parse, a whitelist map, "
+            "or a vetted expression library (3) never pass user input into dynamic execution"
+        )
+    if "regexp" in rid or "redos" in rid:
+        return (
+            "(1) Prefer a literal RegExp (2) allow-list dynamic patterns "
+            "(3) reject untrusted nested quantifiers"
+        )
+    return "Review the Semgrep rule and fix or suppress with justification."
 
 
 def normalize(raw: dict[str, Any], changed: set[str]) -> list[dict[str, Any]]:
@@ -44,27 +66,43 @@ def normalize(raw: dict[str, Any], changed: set[str]) -> list[dict[str, Any]]:
     for r in raw.get("results") or []:
         path = (r.get("path") or "").lstrip("./")
         rule_id = r.get("check_id") or "unknown"
+        # Semgrep prefixes check_id with config path; keep full id for fingerprint
         extra = r.get("extra") or {}
+        metadata = extra.get("metadata") or {}
         start = r.get("start") or {}
         end = r.get("end") or {}
         start_line = start.get("line")
-        fix = extra.get("fix") or (extra.get("metadata") or {}).get("fix")
+        message = (extra.get("message") or rule_id).strip()
+        fix = (
+            extra.get("fix")
+            or metadata.get("fix")
+            or metadata.get("agentic_fix")
+            or default_remediation(rule_id, message)
+        )
+        # Prefer short rule id for display (strip path prefix from local rules)
+        short_id = rule_id
+        if "." in rule_id and "agentic." in rule_id:
+            short_id = rule_id[rule_id.find("agentic.") :]
         out.append(
             {
                 "engine": "semgrep",
-                "rule_id": rule_id,
+                "rule_id": short_id,
                 "severity": map_severity(extra.get("severity") or r.get("severity")),
-                "category": map_category(rule_id),
+                "category": map_category(short_id, metadata),
                 "path": path or None,
                 "start_line": start_line,
                 "end_line": end.get("line"),
-                "message": extra.get("message") or rule_id,
-                "remediation": fix
-                or "Review the Semgrep rule and fix or suppress with justification.",
+                "message": message,
+                "remediation": str(fix).strip(),
                 "in_pr_diff": bool(path) and path in changed,
                 "fingerprint": extra.get("fingerprint")
-                or f"{rule_id}:{path}:{start_line or 0}",
-                "raw": None,
+                or f"{short_id}:{path}:{start_line or 0}",
+                "raw": {
+                    "check_id": rule_id,
+                    "snippet": (extra.get("lines") or "").strip() or None,
+                    "cwe": metadata.get("cwe"),
+                    "owasp": metadata.get("owasp"),
+                },
             }
         )
     return out
