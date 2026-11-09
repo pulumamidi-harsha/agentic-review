@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>agentic-review</title>
+<link rel="stylesheet" href="diagram.css">
+</head>
+<body>
+<div class="canvas">
+  <div class="lane pr">
+    <div class="lane-title">agentic-review · job 1 on the pull request</div>
+    <div class="row" style="grid-template-columns: 210px 52px 250px 52px 1fr 52px 230px">
+      <div class="box start">
+        <h3>Pull request</h3>
+        <p>Opened or updated</p>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 40 20"><path d="M0 10h32M24 2l10 8-10 8" fill="none" stroke="#0091df" stroke-width="3"/></svg></div>
+      <div class="box hub">
+        <div class="num">AI</div>
+        <h3>Detect the stack</h3>
+        <p>Plans the lint, test, build and audit commands</p>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 40 20"><path d="M0 10h32M24 2l10 8-10 8" fill="none" stroke="#0091df" stroke-width="3"/></svg></div>
+      <div class="stack">
+        <div class="box hub">
+          <h3>Lint, test, build</h3>
+          <p>Plus the dependency audit. Runs with the scans.</p>
+        </div>
+        <div class="box hub">
+          <h3>Secrets and IaC</h3>
+          <p>Gitleaks, workflows, Dockerfiles, Terraform</p>
+        </div>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 40 20"><path d="M0 10h32M24 2l10 8-10 8" fill="none" stroke="#de0043" stroke-width="3"/></svg></div>
+      <div class="box result">
+        <h3>Results</h3>
+        <p>Passed to quality-gate and verdict</p>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

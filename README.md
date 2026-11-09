@@ -25,14 +25,7 @@ Advisory first. A team turns on failing the build after the signal is trusted. P
 
 This repo. First job on a pull request. It works out the stack, then runs lint, test, build, the dependency audit, and the secret and IaC scans. Lint and scans run at the same time. It hands the results to the next two jobs and does not post the final review.
 
-```mermaid
-flowchart LR
-    pr[Pull request] --> plan[Detect the stack and plan the commands]
-    plan --> checks[Lint, test, build, dependency audit]
-    plan --> scans[Secrets and IaC scans]
-    checks --> out[Results for the next two jobs]
-    scans --> out
-```
+![What agentic-review does](docs/review.png)
 
 **Add it to an app.** Copy [`examples/caller-orchestrated.yml`](examples/caller-orchestrated.yml). It runs the three pull-request jobs in order:
 
