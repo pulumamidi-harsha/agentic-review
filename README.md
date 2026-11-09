@@ -2,6 +2,11 @@
 
 Four repositories that check code for Bayer teams: open-source scanners, with an AI explanation of what to fix.
 
+- [agentic-review](https://github.com/bayer-int/agentic-review) (this repo)
+- [agentic-quality-gate](https://github.com/bayer-int/agentic-quality-gate)
+- [agentic-verdict](https://github.com/bayer-int/agentic-verdict)
+- [agentic-dast](https://github.com/bayer-int/agentic-dast)
+
 ## The problem
 
 > Agentify Q&A gates for DAST and SAST checks and be part of the Agentic SDLC — contributing to an exit from SonarQube and Burp Suite. Target state: agentified SAST analysis and DAST covering bugs, vulnerabilities, code smells, coverage gaps, and duplication.
