@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agentic AppSec — how it works</title>
+<style>
+  :root {
+    --navy: #10384f;
+    --blue: #0091df;
+    --green: #89d329;
+    --pink: #de0043;
+    --pale: #e7f8ff;
+    --grey: #5a6b77;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1600px;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: var(--navy);
+    background: #ffffff;
+  }
+  .canvas { padding: 56px 64px 48px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 40px; }
+  h1 { font-size: 40px; font-weight: 700; letter-spacing: -0.5px; }
+  h1 span { color: var(--blue); }
+  .tag { font-size: 18px; color: var(--grey); }
+
+  .lane {
+    border-radius: 20px;
+    padding: 28px 32px 32px;
+    margin-bottom: 28px;
+  }
+  .lane.pr { background: var(--pale); }
+  .lane.rt { background: #f4f6f7; }
+  .lane-title {
+    font-size: 15px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase;
+    color: var(--blue); margin-bottom: 22px;
+  }
+  .lane.rt .lane-title { color: var(--grey); }
+
+  .row {
+    display: grid;
+    grid-template-columns: 220px 52px 1fr 52px 1fr 52px 1fr 52px 220px;
+    align-items: stretch;
+  }
+  .arrow {
+    flex: 0 0 52px; display: flex; align-items: center; justify-content: center;
+  }
+  .arrow svg { width: 40px; height: 20px; }
+
+  .box { border-radius: 14px; padding: 20px 22px;
+    display: flex; flex-direction: column; justify-content: center;
+    min-height: 150px;
+  }
+  .box .num {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--blue); color: #fff; font-weight: 700; font-size: 18px;
+    display: flex; align-items: center; justify-content: center; margin-bottom: 12px;
+  }
+  .box h3 { white-space: nowrap; font-size: 21px; font-weight: 700; margin-bottom: 8px; }
+  .box p { font-size: 16px; line-height: 1.4; color: var(--grey); }
+
+  .start { background: #fff; border: 2px dashed var(--blue); }
+  .start code {
+    display: inline-block; margin-top: 10px; padding: 6px 12px; border-radius: 8px;
+    background: var(--navy); color: #fff; font: 600 17px Menlo, Consolas, monospace;
+  }
+  .hub { background: var(--navy); color: #fff; }
+  .hub p { color: #b9d3e3; }
+  .ai-badge {
+    display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 6px;
+    background: var(--blue); color: #fff; font-size: 13px; font-weight: 700; vertical-align: 3px;
+  }
+  .result { background: #fff; border: 2px solid var(--pink); }
+  .result h3 { color: var(--pink); }
+
+  .rt .hub { background: var(--blue); }
+  .rt .hub .num { background: var(--navy); }
+  .rt .hub p { color: #e3f4ff; }
+  .target { background: #fff; border: 2px solid #c3ccd2; }
+  .rt .ai-badge { background: var(--navy); }
+  .spacer { flex: 1; }
+
+  .shared {
+    margin: -6px 0 0; padding-left: 4px; font-size: 16px; color: var(--grey);
+  }
+  .shared b { color: var(--navy); }
+
+  footer {
+    display: flex; gap: 32px; margin-top: 4px; padding-bottom: 8px; font-size: 16px; color: var(--grey);
+  }
+  footer .k { display: flex; align-items: center; gap: 10px; }
+  footer i { width: 18px; height: 18px; border-radius: 4px; display: inline-block; }
+</style>
+</head>
+<body>
+<div class="canvas">
+  <header>
+    <h1>Agentic <span>AppSec</span> — how it works</h1>
+    <div class="tag">Open-source scanners · findings explained by AI</div>
+  </header>
+
+  <section class="lane pr">
+    <div class="lane-title">Code · before and during the pull request</div>
+    <div class="row">
+      <div class="box start">
+        <h3>Your machine</h3>
+        <p>Check before you push. No PR needed.</p>
+        <div><code>run-qg</code></div>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 40 20"><path d="M0 10h32M24 2l10 8-10 8" fill="none" stroke="#0091df" stroke-width="3"/></svg></div>
+      <div class="box hub">
+        <div class="num">1</div>
+        <h3>agentic-review <span class="ai-badge">AI</span></h3>
+        <p>Plans and runs lint, test, build, audit, secrets and IaC scans</p>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 40 20"><path d="M0 10h32M24 2l10 8-10 8" fill="none" stroke="#0091df" stroke-width="3"/></svg></div>
+      <div class="box hub">
+        <div class="num">2</div>
+        <h3>agentic-quality-gate</h3>
+        <p>Hotspots, duplication, complexity, coverage</p>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 40 20"><path d="M0 10h32M24 2l10 8-10 8" fill="none" stroke="#0091df" stroke-width="3"/></svg></div>
+      <div class="box hub">
+        <div class="num">3</div>
+        <h3>agentic-verdict <span class="ai-badge">AI</span></h3>
+        <p>Reads results 1 and 2, writes one review</p>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 40 20"><path d="M0 10h32M24 2l10 8-10 8" fill="none" stroke="#de0043" stroke-width="3"/></svg></div>
+      <div class="box result">
+        <h3>PR comment</h3>
+        <p>Approve or request changes, with what to fix</p>
+      </div>
+    </div>
+  </section>
+  <p class="shared"><b>run-qg</b> and step 2 use the same engines and rules, so what you see locally is what the PR sees.</p>
+
+  <section class="lane rt" style="margin-top:28px">
+    <div class="lane-title">Running app · scheduled or on demand</div>
+    <div class="row">
+      <div class="box target">
+        <h3>Non-prod URL</h3>
+        <p>Dev or test only. Never production.</p>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 40 20"><path d="M0 10h32M24 2l10 8-10 8" fill="none" stroke="#5a6b77" stroke-width="3"/></svg></div>
+      <div class="box hub" style="grid-column: 3 / 6">
+        <div class="num">4</div>
+        <h3>agentic-dast <span class="ai-badge">AI</span></h3>
+        <p>OWASP ZAP and Nuclei, summarized by AI</p>
+      </div>
+      <div class="arrow"><svg viewBox="0 0 40 20"><path d="M0 10h32M24 2l10 8-10 8" fill="none" stroke="#de0043" stroke-width="3"/></svg></div>
+      <div class="box result">
+        <h3>GitHub Issue</h3>
+        <p>Short summary, details folded underneath</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="k"><i style="background:#10384f"></i>Hub repository</div>
+    <div class="k"><span class="ai-badge" style="margin:0;vertical-align:0">AI</span>Uses AI</div>
+    <div class="k"><i style="border:2px solid #de0043"></i>What people see</div>
+    <div class="k"><i style="border:2px dashed #0091df"></i>Developer machine</div>
+  </footer>
+</div>
+</body>
+</html>

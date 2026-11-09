@@ -10,20 +10,7 @@ Four repositories that check code for Bayer teams: open-source scanners, with an
 
 ## How it works
 
-```mermaid
-flowchart TD
-    dev[On your machine<br/>run-qg in the terminal or in chat]
-    pr[Pull request]
-    review[1 · agentic-review<br/>lint, test, build, scans]
-    gate[2 · agentic-quality-gate<br/>hotspots, duplication, complexity, coverage]
-    verdict[3 · agentic-verdict<br/>AI review comment on the PR]
-    url[Non-prod URL]
-    dast[4 · agentic-dast<br/>ZAP and Nuclei]
-    issue[GitHub Issue]
-
-    dev --> pr --> review --> gate --> verdict
-    url --> dast --> issue
-```
+![How Agentic AppSec works](docs/overview.png)
 
 Same checks a developer runs locally with `run-qg` run again on the pull request. DAST is separate: it scans a running non-production app and never blocks a merge.
 
