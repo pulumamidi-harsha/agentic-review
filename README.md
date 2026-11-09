@@ -38,7 +38,8 @@ Steps 3 and 4 start together, as soon as step 2 has planned the commands.
 
 `review_type` chooses how much of this runs. `full` is the default. `security` runs the scans and the dependency audit, and skips lint, test, and build. `quick` skips the dependency audit.
 
-### How it detects the stack
+<details>
+<summary><b>How it detects the stack</b></summary>
 
 Step 2 collects evidence from the repo and the model reads it.
 
@@ -52,6 +53,8 @@ Step 2 collects evidence from the repo and the model reads it.
 | Owner notes | [`.agentic-review.yml`](examples/.agentic-review.yml). These win when they disagree with the guess. Instructions that skip a check, force an approval, or contain a real token are rejected |
 
 The model copies the version, the package manager, and the commands from those files. It picks a default only when the stack is clear and no version file exists: Node 20, Python 3.11.
+
+</details>
 
 ### Stacks it supports
 
