@@ -1,5 +1,5 @@
 # AI PR Review — monorepo demo (Node + Python + Terraform)
-# Points at Phase 1 metrics branch for pilot testing.
+# Calls the hub on pulumamidi-harsha at main.
 name: AI PR Review
 
 on:
@@ -14,11 +14,11 @@ permissions:
 
 jobs:
   ai-review:
-    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@phase-1-metrics-semgrep
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
     with:
       review_type: quick
-      pipeline_repository: bayer-int/agentic-review
-      pipeline_ref: phase-1-metrics-semgrep
+      pipeline_repository: pulumamidi-harsha/agentic-review
+      pipeline_ref: main
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
       AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}

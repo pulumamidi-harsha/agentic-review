@@ -2,10 +2,10 @@
 
 Four repositories that check code for Bayer teams: open-source scanners, with an AI explanation of what to fix.
 
-- [agentic-review](https://github.com/bayer-int/agentic-review) (this repo)
-- [agentic-quality-gate](https://github.com/bayer-int/agentic-quality-gate)
-- [agentic-verdict](https://github.com/bayer-int/agentic-verdict)
-- [agentic-dast](https://github.com/bayer-int/agentic-dast)
+- [agentic-review](https://github.com/pulumamidi-harsha/agentic-review) (this repo)
+- [agentic-quality-gate](https://github.com/pulumamidi-harsha/agentic-quality-gate)
+- [agentic-verdict](https://github.com/pulumamidi-harsha/agentic-verdict)
+- [agentic-dast](https://github.com/pulumamidi-harsha/agentic-dast)
 
 ## The problem
 
@@ -90,13 +90,13 @@ Sonar-style checks on the change: security hotspots, secrets, duplication, compl
 | `git push` | The same checks in a pre-push hook |
 | Pull request | The same checks, plus line comments. Coverage runs here when `lcov` exists |
 
-[Know more →](https://github.com/bayer-int/agentic-quality-gate#readme)
+[Know more →](https://github.com/pulumamidi-harsha/agentic-quality-gate#readme)
 
 ## 3. agentic-verdict
 
 Last step of the pull request. It reads the results of agentic-review and agentic-quality-gate and posts one **AI Code Review**: a comment, an approve or a request for changes, and a label. It runs no scanners of its own.
 
-[Know more →](https://github.com/bayer-int/agentic-verdict#readme)
+[Know more →](https://github.com/pulumamidi-harsha/agentic-verdict#readme)
 
 ## 4. agentic-dast
 
@@ -108,7 +108,7 @@ Scans a running non-production app with OWASP ZAP and Nuclei, then files one Git
 | `deep` | Full ZAP scan plus a wider Nuclei set |
 | `api` | Same as `deep` today |
 
-[Know more →](https://github.com/bayer-int/agentic-dast#readme)
+[Know more →](https://github.com/pulumamidi-harsha/agentic-dast#readme)
 
 ## Use this in your repository
 
@@ -132,7 +132,7 @@ In the application repo: Settings → Secrets and variables → Actions.
 
 ### 2. Add the workflow
 
-Create `.github/workflows/agentic-pr.yml` in the application repo. The ready-made file is [`examples/caller-orchestrated.yml`](examples/caller-orchestrated.yml). That copy still names the pilot mirror and `@main`. Point it at `bayer-int` and pin each `uses:` and `pipeline_ref` to a full commit SHA before you rely on it.
+Create `.github/workflows/agentic-pr.yml` in the application repo. Copy [`examples/caller-orchestrated.yml`](examples/caller-orchestrated.yml). It calls the hubs on `pulumamidi-harsha` at `main`. The workflow below is the same.
 
 ```yaml
 name: Agentic PR Pipeline
@@ -148,10 +148,10 @@ permissions:
 
 jobs:
   ai-phase1:
-    uses: bayer-int/agentic-review/.github/workflows/ai-review-phase1.yml@<full-sha>
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review-phase1.yml@main
     with:
-      pipeline_repository: bayer-int/agentic-review
-      pipeline_ref: <full-sha>
+      pipeline_repository: pulumamidi-harsha/agentic-review
+      pipeline_ref: main
       review_type: full       # full | security | quick
     secrets:
       AI_API_KEY: ${{ secrets.AI_API_KEY }}
@@ -161,10 +161,10 @@ jobs:
   quality-gate:
     needs: ai-phase1
     if: always() && needs.ai-phase1.result == 'success'
-    uses: bayer-int/agentic-quality-gate/.github/workflows/quality-gate.yml@<full-sha>
+    uses: pulumamidi-harsha/agentic-quality-gate/.github/workflows/quality-gate.yml@main
     with:
-      pipeline_repository: bayer-int/agentic-quality-gate
-      pipeline_ref: <full-sha>
+      pipeline_repository: pulumamidi-harsha/agentic-quality-gate
+      pipeline_ref: main
       coverage_artifact: agentic-coverage
     secrets:
       ORG_PAT: ${{ secrets.ORG_PAT }}
@@ -172,10 +172,10 @@ jobs:
   ai-verdict:
     needs: [ai-phase1, quality-gate]
     if: always() && needs.ai-phase1.result == 'success'
-    uses: bayer-int/agentic-verdict/.github/workflows/ai-verdict.yml@<full-sha>
+    uses: pulumamidi-harsha/agentic-verdict/.github/workflows/ai-verdict.yml@main
     with:
-      pipeline_repository: bayer-int/agentic-verdict
-      pipeline_ref: <full-sha>
+      pipeline_repository: pulumamidi-harsha/agentic-verdict
+      pipeline_ref: main
       pr_size: ${{ needs.ai-phase1.outputs.pr_size }}
       diff_lines: ${{ needs.ai-phase1.outputs.diff_lines }}
       changed_files: ${{ needs.ai-phase1.outputs.changed_files }}
@@ -214,5 +214,5 @@ On the pull request you get the four steps from the table above, then the qualit
 
 To skip this repo on one pull request, add the label `skip-ai-review` or `no-review`. `skip-quality-gate` and `skip-ai-verdict` skip the other two jobs on their own.
 
-DAST is a separate workflow. It scans a running non-prod URL on a schedule or by hand. [Know more →](https://github.com/bayer-int/agentic-dast#readme)
+DAST is a separate workflow. It scans a running non-prod URL on a schedule or by hand. [Know more →](https://github.com/pulumamidi-harsha/agentic-dast#readme)
 

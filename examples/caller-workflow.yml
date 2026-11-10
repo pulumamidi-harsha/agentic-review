@@ -41,11 +41,10 @@ permissions:
 
 jobs:
   ai-review:
-    # Pilot: Phase 1 metrics branch. After merge, switch to @main.
-    uses: bayer-int/agentic-review/.github/workflows/ai-review.yml@phase-1-metrics-semgrep
+    uses: pulumamidi-harsha/agentic-review/.github/workflows/ai-review.yml@main
     with:
-      pipeline_repository: bayer-int/agentic-review
-      pipeline_ref: phase-1-metrics-semgrep
+      pipeline_repository: pulumamidi-harsha/agentic-review
+      pipeline_ref: main
       # Optional: Tell the AI about your repo in plain English.
       # Just describe what you need — the AI figures out the rest.
       # Only mention secret NAMES (like "artifactory username"), never actual values.
